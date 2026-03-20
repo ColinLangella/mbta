@@ -5,6 +5,21 @@ from datetime import datetime, timedelta
 import threading
 
 
+class TimeoutRLock:
+    def __init__(self, timeout):
+        self._lock = threading.RLock()
+        self._timeout = timeout
+
+    def __enter__(self):
+        acquired = self._lock.acquire(timeout=self._timeout)
+        if not acquired:
+            raise TimeoutError(f"Failed to acquire lock within {self._timeout} seconds")
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self._lock.release()
+
+
 @dataclass
 class CacheEntry:
     """Cache entry with metadata for HTTP caching."""
@@ -19,7 +34,7 @@ class CacheManager:
 
     def __init__(self):
         self._cache: Dict[str, CacheEntry] = {}
-        self._lock = threading.RLock()
+        self._lock = TimeoutRLock(timeout=3)
 
 
     def get(self, key: str, ttl_seconds: int = 3600) -> tuple[ bool, Optional[CacheEntry] ]:

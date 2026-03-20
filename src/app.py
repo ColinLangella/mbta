@@ -1,11 +1,14 @@
 from flask import Flask, render_template
 from mbta_api import MBTA_API
 from StationFormater import StationDataFormater
+from AlertFormater import AlertDataFormater
+from MultiStopFormater import MultiStopFormater
 from dataclasses import asdict
 import logging
 
 app = Flask(__name__)
 
+app.logger.handlers.clear()
 app.logger.setLevel(logging.DEBUG)
 handler   = logging.StreamHandler()
 formatter = logging.Formatter('[%(asctime)s] %(levelname)s in %(module)s: %(message)s')
@@ -16,17 +19,37 @@ api = MBTA_API(logger=app.logger)
 api.DEBUG = False
 
 StationFormater = StationDataFormater(api)
+AlertFormater = AlertDataFormater(api)
+
+@app.route('/api/nearby_stations')
+def nearby_stations_data():
+    try:
+        # 1. Get allowed types from app config
+        allowed_types = [int(x.strip()) for x in api.ROUTE_TYPE.split(",")]
+        raw_stops = api.getStopsNearLocation()
+        formatted_stations = MultiStopFormater.format_nearby_stations(raw_stops=raw_stops, allowed_types=allowed_types)
+        
+        return [asdict(s) for s in formatted_stations], 200
+    except Exception as e:
+        app.logger.exception("Failed to fetch nearby stations")
+        return {"error": str(e)}, 500
+
+@app.route('/')
+@app.route('/stations')
+def stations_page():
+    """Renders the nearby stations directory page."""
+    return render_template('nearby_stations.html')
 
 # Route to serve the main HTML page
-@app.route('/station/<station_name>')
+@app.route('/station/<path:station_name>')
 def station_monitor(station_name):
     # This renders the index.html file located in the 'templates' folder.
     # We pass the station_name so the HTML/JS knows which data to fetch.
-    return render_template('station_data.html', station_name=station_name)
+    return render_template('stations.html', station_name=station_name)
 
 
 # API route to get station prediction data in JSON format
-@app.route('/station_info/<station_name>')
+@app.route('/api/station/<path:station_name>')
 def station_info(station_name):
     try:
         station_name = station_name.replace("_", " ")
@@ -38,7 +61,7 @@ def station_info(station_name):
 
 
 # API route to get station prediction raw data
-@app.route('/station_info_raw/<station_name>')
+@app.route('/api/station_info_raw/<path:station_name>')
 def station_info_raw(station_name):
     def collectedPrediction_to_dict(pred: MBTA_API.CollectedPrediction) -> dict:
         return {
@@ -57,12 +80,30 @@ def station_info_raw(station_name):
         return {"error": "Internal Server Error"}, 500
 
 
-# @app.route('/alerts')
-# def alerts_view():
-#     try: return {"alerts": formatAlerts(api)}, 200
-#     except Exception as e:
-#         app.logger.exception("Failed to fetch alerts")
-#         return {"error": "Internal Server Error"}, 500
+"""Routes for alerts"""
+@app.route('/alerts')
+def alerts_page():
+    """Renders the HTML container for alerts."""
+    return render_template('alerts.html')
+
+"""API route to get formatted alert data in JSON format."""
+@app.route('/api/alerts')
+def alerts_data():
+    """API route to get formatted alert JSON and allowed route types."""
+    try:
+        raw_alerts = api.getSubwayAlerts()
+        formatted_alerts = AlertFormater.format_alerts(raw_alerts)
+        
+        # Convert the comma-separated string "0,1,3" into a list of integers [0, 1, 3]
+        allowed_types = [int(x.strip()) for x in api.ROUTE_TYPE.split(",")]
+        
+        return {
+            "alerts": [asdict(a) for a in formatted_alerts],
+            "allowed_route_types": allowed_types
+        }, 200
+    except Exception as e:
+        app.logger.exception("Failed to fetch alerts")
+        return {"error": "Internal Server Error"}, 500
 
 
 import argparse
@@ -103,7 +144,7 @@ if __name__ == '__main__':
     api.ROUTE_TYPE = args.route_type
 
     app.logger.info("Starting MBTA API server...")
-    app.logger.info("Version: 0.5")
+    app.logger.info("Version: 0.6")
     app.logger.info("Args: " + str(args))
 
     if args.debug:

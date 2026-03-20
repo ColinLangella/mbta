@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nearby Stations - MBTA Monitor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        [v-cloak] { display: none; }
+        .station-card:hover { transform: translateY(-3px); transition: all 0.25s ease; }
+    </style>
+</head>
+<body id="app" :class="theme.bg + ' ' + theme.text" class="min-h-screen transition-colors duration-300" v-cloak>
+
+    <div v-if="loading && stations.length === 0" class="flex items-center justify-center h-screen">
+        <div class="animate-spin rounded-full h-12 w-12 border-b-2" :class="theme.border"></div>
+    </div>
+
+    <div v-else class="container mx-auto p-4 max-w-5xl">
+        
+        <header class="mb-10 flex justify-between items-end border-b pb-6" :class="theme.borderColor">
+            <div>
+                <h1 class="text-4xl font-extrabold tracking-tight">Nearby Transit</h1>
+                <p class="text-sm opacity-70 mt-1">Real-time departures for stations near you</p>
+            </div>
+            <div class="text-right">
+                <div class="text-sm font-mono opacity-60">[[ currentTime ]]</div>
+                <a href="/alerts" class="text-xs font-bold text-blue-500 hover:text-blue-400 uppercase tracking-widest">System Alerts →</a>
+            </div>
+        </header>
+
+        <div v-for="section in categorizedStations" :key="section.title" class="mb-16">
+            
+            <div class="flex items-center gap-3 mb-8">
+                <div class="w-2 h-8 rounded-full" :class="section.color"></div>
+                <h2 class="text-2xl font-bold tracking-tight">[[ section.title ]]</h2>
+            </div>
+
+            <div v-if="section.items.length > 0" class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div v-for="station in section.items" :key="station.id" 
+                     class="station-card rounded-2xl shadow-lg overflow-hidden border flex flex-col transition-all duration-300"
+                     :class="[theme.cardBg, theme.borderColor]">
+                    
+                    <div class="p-6">
+                        <div class="flex justify-between items-start mb-4">
+                            <div>
+                                <a :href="'/station/' + station.name.replace(/ /g, '_')" 
+                                   class="text-2xl font-bold hover:text-blue-500 transition-colors leading-tight">
+                                    [[ station.name ]]
+                                </a>
+                                <p class="text-xs font-semibold opacity-50 uppercase tracking-widest mt-1">
+                                    [[ station.municipality ]]
+                                </p>
+                            </div>
+                        </div>
+
+                        <div v-if="station.routes.length" class="flex flex-wrap gap-2 mb-6">
+                            <span v-for="route in station.routes" :key="route"
+                                  class="text-[10px] font-bold px-2 py-0.5 rounded bg-black bg-opacity-5 border border-black border-opacity-5 uppercase">
+                                [[ route ]]
+                            </span>
+                        </div>
+
+                        <div class="space-y-3">
+                            <div class="flex items-center justify-between">
+                                <h4 class="text-[10px] font-black uppercase opacity-40 tracking-widest">Live Arrivals</h4>
+                                <div v-if="station.loadingArrivals" class="flex space-x-1">
+                                    <div class="w-1 h-1 bg-blue-500 rounded-full animate-bounce"></div>
+                                    <div class="w-1 h-1 bg-blue-500 rounded-full animate-bounce [animation-delay:-0.15s]"></div>
+                                    <div class="w-1 h-1 bg-blue-500 rounded-full animate-bounce [animation-delay:-0.3s]"></div>
+                                </div>
+                            </div>
+                            
+                            <div v-if="station.arrivals && station.arrivals.length > 0" class="space-y-1.5">
+                                <div v-for="arrival in station.arrivals.slice(0, 4)" 
+                                     class="flex justify-between items-center text-sm p-2.5 rounded-lg transition-colors"
+                                     :class="theme.itemBg">
+                                    <div class="flex items-center gap-3">
+                                        <div class="w-2.5 h-2.5 rounded-full shadow-sm" :class="getRouteColor(arrival.Route)"></div>
+                                        <span class="font-semibold tracking-tight">[[ arrival.Head ]]</span>
+                                    </div>
+                                    <span class="font-mono font-bold" :class="arrival.Wait === 'Arriving' ? 'text-green-500 animate-pulse' : 'opacity-80'">
+                                        [[ arrival.Wait ]]
+                                    </span>
+                                </div>
+                            </div>
+                            
+                            <div v-else-if="!station.loadingArrivals" class="text-xs italic opacity-40 py-2 pl-1">
+                                No upcoming departures scheduled.
+                            </div>
+                        </div>
+                    </div>
+
+                    <a :href="'/station/' + station.name.replace(/ /g, '_')" 
+                       class="mt-auto block text-center py-4 text-[10px] font-black uppercase tracking-[0.2em] border-t hover:bg-blue-600 hover:text-white transition-all"
+                       :class="theme.borderColor">
+                        View Full Board
+                    </a>
+                </div>
+            </div>
+
+            <div v-else class="py-12 text-center rounded-2xl border-2 border-dashed opacity-30" :class="theme.borderColor">
+                <p class="text-lg font-medium italic">No [[ section.title ]] stations found nearby</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const { createApp, ref, onMounted, computed } = Vue;
+
+        const app = createApp({
+            delimiters: ['[[', ']]'], 
+            setup() {
+                const stations = ref([]);
+                const allowedTypes = ref([]);
+                const loading = ref(true);
+                const currentTime = ref('');
+                const IS_DARK_MODE = false;
+
+                const theme = computed(() => {
+                    return IS_DARK_MODE ? {
+                        bg: 'bg-gray-900', text: 'text-gray-100', cardBg: 'bg-gray-800',
+                        itemBg: 'bg-gray-700', border: 'border-gray-600', borderColor: 'border-gray-700'
+                    } : {
+                        bg: 'bg-gray-50', text: 'text-gray-900', cardBg: 'bg-white',
+                        itemBg: 'bg-gray-100', border: 'border-gray-200', borderColor: 'border-gray-200'
+                    };
+                });
+
+                // Sections Config
+                const SECTIONS_META = [
+                    { title: "Subway & Light Rail", types: [0, 1], color: "bg-orange-500" },
+                    { title: "Commuter Rail", types: [2], color: "bg-purple-600" },
+                    { title: "Buses", types: [3], color: "bg-yellow-500" },
+                    { title: "Ferry", types: [4], color: "bg-blue-500" }
+                ];
+
+                const categorizedStations = computed(() => {
+                    // Filter down to categories included in the app's allowedTypes
+                    const activeCategories = SECTIONS_META.filter(cat => 
+                        cat.types.some(t => allowedTypes.value.includes(t))
+                    );
+
+                    return activeCategories.map(cat => ({
+                        ...cat,
+                        items: stations.value.filter(s => cat.types.includes(s.primary_route_type))
+                    }));
+                });
+
+                const fetchNearby = async () => {
+                    try {
+                        const response = await fetch('/api/nearby_stations');
+                        const data = await response.json();
+                        // Note: your API response should ideally be a dict {stations: [], allowed_route_types: []}
+                        // If it's just a list, ensure your app.py sends allowedTypes too.
+                        // Assuming the API returns the list directly for now, and we use a local default for allowedTypes
+                        // OR we assume app.py was updated to return both.
+                        
+                        // Handle both raw list or wrapped object
+                        const list = Array.isArray(data) ? data : data.stations;
+                        allowedTypes.value = data.allowed_route_types || [0, 1, 2, 3, 4];
+
+                        stations.value = list.map(s => ({ ...s, arrivals: [], loadingArrivals: true }));
+                        stations.value.forEach(fetchStationArrivals);
+                    } catch (error) {
+                        console.error("Error fetching nearby stations:", error);
+                    } finally {
+                        loading.value = false;
+                    }
+                };
+
+                const fetchStationArrivals = async (station) => {
+                    try {
+                        const safeName = station.name.replace(/ /g, '_');
+                        const response = await fetch(`/api/station/${safeName}`);
+                        const data = await response.json();
+                        
+                        let allArrivals = [];
+                        if (data.TLines) {
+                            data.TLines.forEach(line => {
+                                if (line.Platform1) allArrivals.push(...line.Platform1.Predictions);
+                                if (line.Platform2) allArrivals.push(...line.Platform2.Predictions);
+                            });
+                        }
+                        if (data.BusLines) {
+                            data.BusLines.forEach(bus => allArrivals.push(...bus.Predictions));
+                        }
+
+                        // Sort by wait time (Arriving first)
+                        station.arrivals = allArrivals.sort((a, b) => {
+                           const timeA = a.Wait === 'Arriving' ? 0 : parseInt(a.Wait) || 999;
+                           const timeB = b.Wait === 'Arriving' ? 0 : parseInt(b.Wait) || 999;
+                           return timeA - timeB;
+                        });
+                    } catch (e) {
+                        console.error(`Failed arrivals for ${station.name}`);
+                    } finally {
+                        station.loadingArrivals = false;
+                    }
+                };
+
+                const getRouteColor = (route) => {
+                    const r = (route || "").toLowerCase();
+                    if (r.includes('red')) return 'bg-red-600';
+                    if (r.includes('orange')) return 'bg-orange-500';
+                    if (r.includes('blue')) return 'bg-blue-600';
+                    if (r.includes('green')) return 'bg-green-600';
+                    if (r.includes('rail')) return 'bg-purple-600';
+                    return 'bg-yellow-500'; // Bus default
+                };
+
+                const updateTime = () => {
+                    currentTime.value = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                };
+
+                onMounted(() => {
+                    fetchNearby();
+                    updateTime();
+                    setInterval(updateTime, 1000);
+                    setInterval(fetchNearby, 60000); 
+                });
+
+                return {
+                    stations, allowedTypes, categorizedStations,
+                    loading, theme, currentTime, getRouteColor
+                };
+            }
+        });
+        app.mount('#app');
+    </script>
+</body>
+</html>
