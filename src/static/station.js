@@ -26,20 +26,20 @@ document.addEventListener("DOMContentLoaded", function () {
             const div = document.createElement("div");
 
             const destination = document.createElement("span");
-            destination.textContent = pred["End Station"];
+            destination.textContent = pred["end_station"];
 
             const timeBadge = document.createElement("span");
             timeBadge.className = "time-badge";
-            timeBadge.textContent = pred["Wait"];
+            timeBadge.textContent = pred["wait"];
 
             div.appendChild(destination);
             div.appendChild(timeBadge);
 
             // Add red status badge if present
-            if (pred["Status"]) {
+            if (pred["status"]) {
                 const statusBadge = document.createElement("span");
                 statusBadge.className = "status-badge";
-                statusBadge.textContent = pred["Status"];
+                statusBadge.textContent = pred["status"];
                 div.appendChild(statusBadge);
             }
 

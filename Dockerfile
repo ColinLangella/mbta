@@ -12,6 +12,8 @@ ENV APP_VERSION=${APP_VERSION} \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+COPY lib/mbta_client ./mbta_client
+
 COPY src/ .
 
 ENV PYTHONPATH=/app
