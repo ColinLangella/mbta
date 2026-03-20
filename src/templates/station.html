@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>MBTA - {{ station }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <main>
+        <h1>Live Subway Predictions for <span id="station-name">{{ station }}</span></h1>
+        <div id="content">Loading...</div>
+    </main>
+    <script src="{{ url_for('static', filename='station.js') }}"></script>
+</body>
+
+</html>

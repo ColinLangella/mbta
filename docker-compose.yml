@@ -1,0 +1,12 @@
+services:
+  mbta-monitor:
+    image: mbta-monitor:${APP_VERSION:-dev}
+    container_name: mbta-monitor
+    build:
+      context: .
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}
+    ports:
+      - "${HOST_PORT:-5000}:4995"
+    env_file: .env
+    restart: unless-stopped

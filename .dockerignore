@@ -1,0 +1,15 @@
+.git
+.gitignore
+.dockerignore
+.worktrees/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.env
+.env.*
+.github/
+.claude/
+.vscode/
+*.md
+*.patch
