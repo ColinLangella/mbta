@@ -159,6 +159,67 @@ def formatPrediction(predInfo, api: MBTA_API = MBTA_API(), stationIds: set = set
     }
 
 
+def getPredData(predInfo, api: MBTA_API = MBTA_API()):
+    tripIds    = [ p["relationships"]["trip"]["data"]["id"] for p in predInfo ]
+    vehicleIds = [ p["relationships"]["vehicle"]["data"]["id"] for p in predInfo ]
+
+    tripStr    = ",".join(tripIds)
+    vehicleStr = ",".join(vehicleIds)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futTrips    = executor.submit( api._get, "trips", {"filter[id]": tripStr} )
+        futVehicles = executor.submit( api._get, "vehicles", {"filter[id]": vehicleStr} )
+
+        trips    = futTrips.result().get("data", [])
+        vehicles = futVehicles.result().get("data", [])
+
+
+    return zip(predInfo, trips, vehicles)
+
+
+def formatPrediction2(predInfo, trip, train, stationIds: set = set()):
+    if trip is not None:
+        headsign = trip["attributes"]["headsign"]
+    else:
+        # if DEBUG: current_app.logger.warning(f"Missing trip data for id = {tripId}")
+        if DEBUG: current_app.logger.debug(f"Prediction Info: {dumps(predInfo, indent=2)}")
+        headsign = ""
+
+    try:
+        if train is None: raise Exception()
+        trainStopId = train["relationships"]["stop"]["data"]["id"]
+        trainStatusRaw = train["attributes"].get("current_status", "")
+        trainStatus = TRAIN_STATUS_MAP.get(trainStatusRaw, "") if trainStopId in stationIds else ""
+    except TypeError as e:
+        # if DEBUG: current_app.logger.warning(f"Incomplete train data for id = {vehicleId}")
+        if DEBUG: current_app.logger.debug(f"Prediction Info: {dumps(predInfo, indent=2)}")
+        trainStatus = ""
+    except:
+        # if DEBUG: current_app.logger.warning(f"Missing train data for id = {vehicleId}")
+        if DEBUG: current_app.logger.debug(f"Prediction Info: {dumps(predInfo, indent=2)}")
+        trainStatus = ""
+
+    arrivalTime = predInfo["attributes"].get("arrival_time")
+    departureTime = predInfo["attributes"].get("departure_time")
+
+    if arrivalTime:
+        waitMinutes = minutes_from_now(arrivalTime)
+    elif departureTime:
+        waitMinutes = minutes_from_now(departureTime)
+    else:
+        waitMinutes = 100  # Arbitrary fallback far in future
+
+    return {
+        "Line": predInfo["relationships"]["route"]["data"]["id"],
+        "End Station": headsign,
+        "Arrival": arrivalTime,
+        "Wait": f"{waitMinutes} minute(s)",
+        "Direction": predInfo["attributes"].get("direction_id", -1),
+        "Status": predInfo["attributes"].get("status"),
+        "TInfo": trainStatus
+    }
+
+
 def getStationPredictions(stopName="Lechmere", api: MBTA_API = MBTA_API(), app=None):
     """
     Fetch predictions for all station descriptions matching stopName.
@@ -173,9 +234,12 @@ def getStationPredictions(stopName="Lechmere", api: MBTA_API = MBTA_API(), app=N
     def processStop(desc, stopId):
         if app:
             if DEBUG: app.logger.debug(f"Processing stop: {desc} (ID: {stopId})")
+
         preds = api.getPredictionsFromStopId(stopId)
+        predInfo = getPredData(preds, api)
+
         with ThreadPoolExecutor() as sub_executor:
-            futures = [sub_executor.submit(formatPrediction, pred, api, stopIds) for pred in preds]
+            futures = [sub_executor.submit(formatPrediction2, pred, trip, train, stopIds) for pred, trip, train in predInfo]
             return desc, [f.result() for f in futures]
 
     result = {}

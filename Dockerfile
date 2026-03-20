@@ -16,6 +16,6 @@ COPY src/ .
 
 ENV PYTHONPATH=/app
 
-EXPOSE 4995
+EXPOSE 5000
 
 ENTRYPOINT ["python", "app.py"]

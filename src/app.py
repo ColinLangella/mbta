@@ -36,8 +36,8 @@ def station_info(station_name):
 
 if __name__ == '__main__':
     app.logger.info("Starting MBTA API server...")
-    app.logger.info("Version: 0.1")
+    app.logger.info("Version: 0.2")
 
     api = MBTA_API()  # assumes API key is in environment variable
     with app.app_context():
-        app.run(host="0.0.0.0", port="4995", debug=True)
+        app.run(host="0.0.0.0", port="5000", debug=True)
