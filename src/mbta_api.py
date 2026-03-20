@@ -1,18 +1,17 @@
 # General Imports
 import os, logging
-from datetime import datetime, timezone
 from json import dumps
 
 # Typing Imports
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from typing import Optional
 
 # Swagger API Imports
 # based on `https://api-v3.mbta.com/docs/swagger/index.html#`
 import mbta_client
 from mbta_client import api_client, configuration
-from mbta_client.api import alert_api, prediction_api, stop_api, trip_api, vehicle_api
-from mbta_client.models import alert_resource, prediction_resource, stop_resource, trip_resource, vehicle_resource
+from mbta_client.api import alert_api, prediction_api, stop_api, trip_api, vehicle_api, route_api
+from mbta_client.models import alert_resource, prediction_resource, stop_resource, trip_resource, vehicle_resource, route_resource
 from mbta_client.api_response import ApiResponse
 
 # Concurrency Imports
@@ -30,10 +29,19 @@ class MBTA_API:
     MAX_LEN    = 10
     ROUTE_TYPE = '0,1' # https://gtfs.org/documentation/schedule/reference/#routestxt
 
+    ROUTE_TYPE_LIGHTRAIL = 0
+    ROUTE_TYPE_SUBWAY    = 1
+    ROUTE_TYPE_RAIL      = 2
+    ROUTE_TYPE_BUS       = 3
+    ROUTE_TYPE_FERRY     = 4
+
     TRAIN_STATUS_MAP = {
         'STOPPED_AT': 'Boarding',
         'INCOMING_AT': 'Arriving',
         'IN_TRANSIT_TO': 'Next Stop' }
+
+    MY_LATITUDE  =  42.3564
+    MY_LONGITUDE = -71.0622
 
     # Cache TTL settings (seconds)
     STOPS_CACHE_TTL  = 86400    # 24 hours
@@ -45,16 +53,25 @@ class MBTA_API:
     MAX_WORKERS = 16
 
 
+    @dataclass(frozen=True)
+    class CurrentStopInfo:
+        """Dataclass to hold current stop information."""
+        stopId:      str
+        stopName:    str
+        description: str
+        routeType:   int
+        platName:    Optional[str] = None
+        stopColor:   Optional[str] = None
+
+
     @dataclass
-    class FormattedPrediction:
-        """Dataclass to hold important information about a prediction"""
-        line:        str
-        end_station: str
-        arrival:     str
-        wait:        str
-        direction:   int
-        status:      str
-        tInfo:       str
+    class CollectedPrediction:
+        """Dataclass to hold raw important information about a prediction"""
+        prediction: prediction_resource.PredictionResource
+        trip:       Optional[trip_resource.TripResource]       = None
+        vehicle:    Optional[vehicle_resource.VehicleResource] = None
+        stop:       Optional[stop_resource.StopResource]       = None
+        route:      Optional[route_resource.RouteResource]     = None
 
 
     ### Setup and Destructor Scripts
@@ -84,6 +101,7 @@ class MBTA_API:
         self._stop       = stop_api.StopApi(api_client=self._api_client)
         self._trip       = trip_api.TripApi(api_client=self._api_client)
         self._vehicle    = vehicle_api.VehicleApi(api_client=self._api_client)
+        self._route      = route_api.RouteApi(api_client=self._api_client)
 
 
     def __enter__(self):
@@ -159,6 +177,30 @@ class MBTA_API:
             return httpResponse.data.data
 
 
+    def getStopsByIds(self, stopIds: str) -> list[stop_resource.StopResource]:
+        """Get multiple stops by comma-separated IDs."""
+
+        stopIds = set(stopIds.split(","))
+        return [ stop for stop in self.getSubwayStops() if stop.id in stopIds ]
+
+
+    def getStopsNearLocation(self, lat: float = MY_LATITUDE, lon: float = MY_LONGITUDE, radiusMiles: float = 0.5, overrideRouteType: Optional[str] = None) -> list[stop_resource.StopResource]:
+        """Get stops near a specific latitude and longitude within a given radius."""
+
+        # Convert radius from miles to degrees (approximate specifically for MBTA area)
+        radiusDegrees = radiusMiles * 0.02
+
+        if self.DEBUG: self.logger.debug(f"Fetching stops near location ({lat}, {lon}) within {radiusMiles} miles...")
+
+        return self._stop.api_web_stop_controller_index(
+            filter_latitude   = str(lat),
+            filter_longitude  = str(lon),
+            filter_radius     = radiusDegrees,
+            filter_route_type = overrideRouteType or self.ROUTE_TYPE,
+            sort = 'distance'
+        ).data
+
+
     def getPredictionsFromStopId(self, stopId: str) -> list[prediction_resource.PredictionResource]:
         """Get predictions for a specific stop ID with caching and HTTP last modified headers."""
 
@@ -192,6 +234,7 @@ class MBTA_API:
 
         ## TODO: Future improvement: loop through trip IDs and cache them
 
+
         if self.DEBUG: self.logger.debug(f"Fetching trip ID from API: {tripId}")
         return self._trip.api_web_trip_controller_index(
             filter_id=tripId ).data
@@ -208,6 +251,41 @@ class MBTA_API:
             filter_id=trainId ).data
 
 
+    def getRouteById(self, routeId: str) -> route_resource.RouteResource:
+        """Get route details by ID."""
+
+        # cache routes individually with 1hr ttl
+        cacheStr = f"Route_{routeId}"
+        exp, cached = self.cache.get(cacheStr, ttl_seconds=self.TRIPS_CACHE_TTL)
+
+        if not exp and cached is not None:
+            if self.DEBUG: self.logger.debug(f"Returning cached route for ID: {routeId}")
+            return cached.data[0]
+
+        if self.DEBUG: self.logger.info("Fetching routes from MBTA API")
+        httpResponse = self._route.api_web_route_controller_index_with_http_info(
+            filter_id = routeId, page_limit = self.MAX_LEN,
+            _headers = self.cache.get_cache_headers(cacheStr) )
+
+        if httpResponse.status_code == 304:
+            self.cache.refresh(cacheStr)
+            if self.DEBUG: self.logger.debug(f"Received 304 Not Modified for route {routeId}, returning cached data")
+            return cached.data[0]
+        else:
+            self._cacheResponse(cacheStr, httpResponse)
+            return httpResponse.data.data[0]
+
+
+    def getRoutesByIds(self, routeIds: str):
+        """Get multiple routes by comma-separated IDs."""
+
+        routeList = routeIds.split(",")
+        routeFutures = [ self._executor.submit(
+            self.getRouteById, rId
+        ) for rId in routeList ]
+
+        return [ f.result() for f in routeFutures ]
+
 
     def getStationPredictions(self, stopName="Lechmere"):
         """
@@ -218,105 +296,98 @@ class MBTA_API:
         def getPredData(predInfo: list[prediction_resource.PredictionResource]):
             """Fetch trip and vehicle data for predictions in parallel."""
             try:
-                tripIds    = [ p.relationships.trip.data.id for p in predInfo ]
-                vehicleIds = [ p.relationships.vehicle.data.id for p in predInfo ]
+                ### Start by reoganizing input data
+
+                # Subset of PredictionResourceRelationships.__properties
+                importantRelTypes = [
+                    "vehicle",
+                    "trip",
+                #   "stop",
+                    "route"]
+
+                # [ ( pred, { "vehicle": vID, "trip": tID, "stop": sID, "route": rID } ), ... ]
+                expandedInfo = [ (
+                    p, {
+                        relType: getattr(p.relationships, relType).data.id
+                        if (p.relationships is not None) and (getattr(p.relationships, relType) is not None) and (getattr(p.relationships, relType).data is not None)
+                        else None for relType in importantRelTypes } )
+                    for p in predInfo ]
+
+                # { "vehicle" : { vID ... }, "trip" { tID ... }, "stop" { sID ... }, "route": { rID ... } }
+                allRelationshipIds = {
+                    relType: { data[relType] for _, data in expandedInfo if data[relType] is not None }
+                    for relType in importantRelTypes }
 
                 # Fetch data in parallel
-                trips, vehicles = [], []
-                if tripIds or vehicleIds:
-                    if tripIds:
-                        tripFutures = self._executor.submit(
-                            self.getTripsById, ",".join(tripIds) )
+                allRelationshipData = {}
+                for relType in importantRelTypes:
+                    relIds    = allRelationshipIds[relType]
+                    haveAnyId = (len(relIds) > 0)
 
-                    if vehicleIds:
-                        vehicleFutures = self._executor.submit(
-                            self.getVehicleById, ",".join(vehicleIds) )
+                    if haveAnyId:
+                        correctFunction = {
+                            "vehicle": self.getVehicleById,
+                            "trip":    self.getTripsById,
+                            "stop":    self.getStopsByIds,
+                            "route":   self.getRoutesByIds
+                        }[relType]
 
-                    # Collect results
-                    if tripIds:    trips    = tripFutures.result()
-                    if vehicleIds: vehicles = vehicleFutures.result()
-            
+                        relFutures = self._executor.submit(
+                            correctFunction, ",".join(list(relIds)) )
+                        allRelationshipData[relType] = (haveAnyId, relFutures)
+
+                    else:
+                        allRelationshipData[relType] = (haveAnyId, None)
+
+                # Collect data
+                for relType in importantRelTypes:
+                    haveAnyId, relFutures = allRelationshipData[relType]
+                    if haveAnyId:
+                        dataMap = { i.id: i for i in relFutures.result() }
+                        allRelationshipData[relType] = (haveAnyId, dataMap)
+
+                # Create output
+                return [
+                    self.CollectedPrediction(
+                        prediction = p,
+                        trip       = allRelationshipData["trip"][1][data["trip"]]       if ("trip" in data) and (data["trip"] is not None)       else None,
+                        vehicle    = allRelationshipData["vehicle"][1][data["vehicle"]] if ("vehicle" in data) and (data["vehicle"] is not None) else None,
+                    #   stop       = allRelationshipData["stop"][1][data["stop"]]       if ("stop" in data) and (data["stop"] is not None)       else None,
+                        route      = allRelationshipData["route"][1][data["route"]]     if ("route" in data) and (data["route"] is not None)     else None
+                    ) for p, data in expandedInfo ]
+
             except Exception as e:
                 self.logger.exception(f"Exception while trying to gedPredData: {e}")
                 if self.DEBUG: self.logger.debug(predInfo)
-                trips    = [None]*len(predInfo)
-                vehicles = [None]*len(predInfo)
-
-            return zip(predInfo, trips, vehicles)
+                return [ self.CollectedPrediction(p) for p in predInfo ]
 
 
-        def formatPrediction( stationIds: set,
-                predInfo: prediction_resource.PredictionResource,
-                trip: trip_resource.TripResource,
-                train: vehicle_resource.VehicleResource):
-            """Format a single prediction into a structured object."""
-            if trip is not None: headsign = trip.attributes.headsign
-            else:
-                if self.DEBUG: self.logger.warning(f"Missing trip data: {trip}")
-                if self.DEBUG: self.logger.debug(f"Prediction Info: {predInfo}")
-                headsign = "Unknown"
-
-            try:
-                if train is None: raise Exception()
-                trainStopId = train.relationships.stop.data.id
-                trainStatusRaw = train.attributes.current_status
-
-                # Ensure that train status applies to one of current station IDs
-                trainStatus = self.TRAIN_STATUS_MAP.get(trainStatusRaw, "") if trainStopId in stationIds else ""
-            except TypeError as e:
-                if self.DEBUG: self.logger.warning(f"Incomplete train: {train}")
-                if self.DEBUG: self.logger.debug(f"Prediction Info: {predInfo}")
-                trainStatus = ""
-            except:
-                if self.DEBUG: self.logger.warning(f"Missing train data: {train}")
-                if self.DEBUG: self.logger.debug(f"Prediction Info: {predInfo}")
-                trainStatus = ""
-
-            arrivalTime   = predInfo.attributes.arrival_time
-            departureTime = predInfo.attributes.departure_time
-            currentTime   = datetime.now(tz=timezone.utc)
-
-            if arrivalTime:
-                waitTime = (datetime.fromisoformat(arrivalTime) - currentTime).total_seconds()
-                if waitTime < 0: waitTime = 0  # Ensure non-negative wait
-            elif departureTime:
-                waitTime = (datetime.fromisoformat(departureTime) - currentTime).total_seconds()
-                if waitTime < 0: waitTime = 0  # Ensure non-negative wait
-            else:
-                waitTime = 6000  # Arbitrary fallback far in future
-
-            return self.FormattedPrediction(
-                predInfo.relationships.route.data.id,
-                headsign, arrivalTime, f"{int(waitTime//60)} minute(s)",
-                predInfo.attributes.direction_id,
-                predInfo.attributes.status, trainStatus )
-
-
-        def processStop(desc, stopId):
+        def processStop(stop: MBTA_API.CurrentStopInfo):
             """Process a single stop to get predictions."""
-            if self.DEBUG: self.logger.debug(f"Processing stop: {desc} (ID: {stopId})")
+            if self.DEBUG: self.logger.debug(f"Processing stop: {stop.description} (ID: {stop.stopId})")
 
-            preds = self.getPredictionsFromStopId(stopId)
+            preds    = self.getPredictionsFromStopId(stop.stopId)
             predInfo = getPredData(preds)
 
-            futures = [
-                self._executor.submit(formatPrediction, stopIds, pred, trip, train)
-                for pred, trip, train in predInfo ]
-            return desc, [f.result() for f in futures]
+            return stop, predInfo
 
 
         # Get all subway stops
         stops = self.getSubwayStops()
-        matchingStops = [stop for stop in stops if stop.attributes.name == stopName]
-
-        stopDescToId = {stop.attributes.description: stop.id for stop in matchingStops}
-        stopIds = {stop.id for stop in matchingStops}
-
+        matchingStops = { MBTA_API.CurrentStopInfo ( 
+                            stopId   = stop.id,
+                            stopName = stop.attributes.name,
+                            description = stop.attributes.description,
+                            routeType = stop.attributes.vehicle_type,
+                            platName = stop.attributes.platform_name,
+                            stopColor = stop.attributes.description.split("-")[1].strip() if (stop.attributes.vehicle_type in (self.ROUTE_TYPE_LIGHTRAIL, self.ROUTE_TYPE_SUBWAY)) else None
+                        ) for stop in stops if stop.attributes.name == stopName }
 
         # Use ThreadPoolExecutor to process stops in parallel
         futures = [
-            self._executor.submit(processStop, desc, stopId)
-            for desc, stopId in stopDescToId.items() ]
+            self._executor.submit(processStop, stop)
+            for stop in matchingStops ]
+
         return dict(f.result() for f in futures)
 
 
@@ -400,4 +471,33 @@ if __name__ == '__main__':
             timeWithNWorkers(workers)
             time.sleep(1)
 
-    timeStationGets()
+    def testGetRoutesById():
+        api.DEBUG = True
+        for r in api.getRoutesByIds("Red,Green-E,69"):
+            pprint(r)
+        for r in api.getRoutesByIds("Red,Green-E,69,70,Blue"):
+            pprint(r)
+
+    def tmp():
+        api.ROUTE_TYPE = "0,1,3"
+        v = api.getStationPredictions()
+        for k, i in v.items():
+            print(f"--- {k} ---")
+            for p in i:
+                if not p.vehicle: continue
+                pprint(p.prediction.to_dict() if p.prediction else ["No prediction"])
+                pprint(p.trip.to_dict() if p.trip else ["No trip"])
+                pprint(p.vehicle.to_dict() if p.vehicle else ["No vehicle"])
+                pprint(p.stop.to_dict() if p.stop else ["No stop"])
+                pprint(p.route.to_dict() if p.route else ["No route"])
+                print("\n\n")
+                break
+
+    def testGetStopsNearLocation():
+        api.DEBUG = True
+        stops = api.getStopsNearLocation()
+        for stop in stops:
+            print("\n----------------------------\n")
+            pprint(stop.to_dict())
+
+    testGetStopsNearLocation()
