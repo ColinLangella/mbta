@@ -1,3 +1,4 @@
+import logging
 from mbta_api import MBTA_API
 
 from dataclasses import dataclass
@@ -37,11 +38,16 @@ class FormattedStationData:
 
 
 """Formats MBTA API data into structured formats for display."""
-class StationDataFormater:
+class StationDataFormatter:
 
-    """Initializes the AppFormater with an MBTA_API instance."""
-    def __init__(self, api: MBTA_API):
-        self.api = api
+    TRAIN_STATUS_MAP = {
+        'STOPPED_AT':    'Boarding',
+        'INCOMING_AT':   'Arriving',
+        'IN_TRANSIT_TO': 'Next Stop' }
+
+    def __init__(self, logger: logging.Logger, debug: bool = False):
+        self.logger = logger
+        self.debug  = debug
 
 
     """Processes a single prediction into an IndiviualPrediction."""
@@ -50,7 +56,6 @@ class StationDataFormater:
         pred    = fullPred.prediction
         trip    = fullPred.trip
         vehicle = fullPred.vehicle
-        # stop    = fullPred.stop
         route   = fullPred.route
 
         # Start by determining wait time
@@ -66,18 +71,17 @@ class StationDataFormater:
             waitTime = (datetime.fromisoformat(departureTime) - currentTime).total_seconds()
             if waitTime < 0: waitTime = 0  # Ensure non-negative wait
         else:
-            self.api.logger.warning(f"No arrival or departure time for prediction {pred.id} at stop {currentStop.stopName}. Using fallback wait time.")
-            if self.api.DEBUG: self.api.logger.debug(f"Full prediction data: {fullPred}")
+            self.logger.warning(f"No arrival or departure time for prediction {pred.id} at stop {currentStop.stopName}. Using fallback wait time.")
+            if self.debug: self.logger.debug(f"Full prediction data: {fullPred}")
             waitTime = 6000  # Arbitrary fallback far in future
-            print(f"\n\n{pred.attributes.schedule_relationship}\n\n")
 
         waitTime = int(waitTime)//60
         waitStr = f"{waitTime} minute(s)"
 
         # Arriving / Boarding current stop (added (waitTime < 30) since some busses were showing incorrectly)
-        if vehicle and (vehicle.attributes.current_status in self.api.TRAIN_STATUS_MAP.keys()) and (waitTime < 30) \
+        if vehicle and (vehicle.attributes.current_status in self.TRAIN_STATUS_MAP.keys()) and (waitTime < 30) \
                    and vehicle.relationships.stop and (currentStop.stopId == vehicle.relationships.stop.data.id):
-            waitStr = self.api.TRAIN_STATUS_MAP[ vehicle.attributes.current_status ]
+            waitStr = self.TRAIN_STATUS_MAP[ vehicle.attributes.current_status ]
 
         # Determine head
         if trip and trip.attributes:
@@ -86,9 +90,8 @@ class StationDataFormater:
             head = "Unknown Destination"
 
         # End station edge case
-        # if (arrivalTime and not departureTime) and (route.attributes.direction_destinations[ trip.attributes.direction_id ] == currentStop.stopName):
         if head == currentStop.stopName:
-            if self.api.DEBUG: self.api.logger.debug(f"End of line detected for trip {trip.id} at stop {currentStop.stopName}. Adjusting head to other end.")
+            if self.debug: self.logger.debug(f"End of line detected for trip {trip.id} at stop {currentStop.stopName}. Adjusting head to other end.")
             otherDir = (trip.attributes.direction_id + 1) % 2
             head     = route.attributes.direction_destinations[ otherDir ]
 
@@ -97,8 +100,6 @@ class StationDataFormater:
             routeName = route.attributes.short_name if route.attributes.short_name else route.attributes.long_name
         else:
             routeName = "Unknown Route"
-            print(trip)
-            print(vehicle)
 
         # Determine status
         trainStatus = None
@@ -137,7 +138,7 @@ class StationDataFormater:
         lineColorSet = { dat.route.attributes.color for dat in tData1[1] + tData2[1]
                         if dat.route and dat.route.attributes and dat.route.attributes.color }
         if len(lineColorSet) > 1:
-            self.api.logger.error(f"Multiple colors found for line {lineName}. Using first color.")
+            self.logger.error(f"Multiple colors found for line {lineName}. Using first color.")
         lineColor = lineColorSet.pop() if lineColorSet else None
 
         return FormattedTLine(
@@ -153,7 +154,7 @@ class StationDataFormater:
             BuswayName  = stop.platName if stop.platName else (stop.description if stop.description else stop.stopName),
             Predictions = sorted( [
                 self.ProcessPrdiction(stop, pred) for pred in preds ],
-                key=lambda p: self._to_minutes(p) ) )   
+                key=lambda p: self._to_minutes(p) ) )
 
 
     """Creates formatted station data from raw prediction data."""
@@ -161,7 +162,7 @@ class StationDataFormater:
         TLines   = {}
         BusLines = []
 
-        # Combine by  lines color and check correct uniqueness
+        # Combine by lines color and check correct uniqueness
         for stop, preds in predictionData.items():
 
 
@@ -169,10 +170,10 @@ class StationDataFormater:
             if stop.routeType in (MBTA_API.ROUTE_TYPE_LIGHTRAIL, MBTA_API.ROUTE_TYPE_SUBWAY):
                 dirIds = {pred.prediction.attributes.direction_id for pred in preds}
                 if len(dirIds) != 1:
-                    self.api.logger.error(f"Multiple directions found for line at station {stationName}. Only one direction per line is supported.")
-                    if self.api.DEBUG:
-                        self.api.logger.debug(f"Existing TLine: {TLines.get(stop.description)}")
-                        self.api.logger.debug(f"New TLine attempt: {(stop, preds)}")
+                    self.logger.error(f"Multiple directions found for line at station {stationName}. Only one direction per line is supported.")
+                    if self.debug:
+                        self.logger.debug(f"Existing TLine: {TLines.get(stop.description)}")
+                        self.logger.debug(f"New TLine attempt: {(stop, preds)}")
                     continue
 
                 dirId = dirIds.pop()
@@ -183,42 +184,27 @@ class StationDataFormater:
 
                 if dirId == 0:
                     if tData1 is not None:
-                        self.api.logger.error(f"Multiple platform 1 entries found for line at station {stationName}. Only one platform 1 is supported.")
-                        if self.api.DEBUG:
-                            self.api.logger.debug(f"Existing Platform 1: {tData1}")
-                            self.api.logger.debug(f"New Platform 1 attempt: {(stop, preds)}")
+                        self.logger.error(f"Multiple platform 1 entries found for line at station {stationName}. Only one platform 1 is supported.")
+                        if self.debug:
+                            self.logger.debug(f"Existing Platform 1: {tData1}")
+                            self.logger.debug(f"New Platform 1 attempt: {(stop, preds)}")
                         continue
                     tData1 = (stop, preds)
                 else:
                     if tData2 is not None:
-                        self.api.logger.error(f"Multiple platform 2 entries found for line at station {stationName}. Only one platform 2 is supported.")
-                        if self.api.DEBUG:
-                            self.api.logger.debug(f"Existing Platform 2: {tData2}")
-                            self.api.logger.debug(f"New Platform 2 attempt: {(stop, preds)}")
+                        self.logger.error(f"Multiple platform 2 entries found for line at station {stationName}. Only one platform 2 is supported.")
+                        if self.debug:
+                            self.logger.debug(f"Existing Platform 2: {tData2}")
+                            self.logger.debug(f"New Platform 2 attempt: {(stop, preds)}")
                         continue
                     tData2 = (stop, preds)
-                
+
                 TLines[color] = (tData1, tData2)
 
 
             # Process bus lines
             if stop.routeType == MBTA_API.ROUTE_TYPE_BUS:
-
-                    # # Special case for silver line
-                    # if "Silver Line" in stop.description:
-                    #     if self.api.DEBUG: self.api.logger.debug(f"Adding Silver Line predictions to existing BusLine at station {stationName}.")
-                    #     stop  = stop if ("Exit Only" not in stop.description) else BusLine[0]
-                    #     preds = BusLine[1] + preds
-
-                    # else:
-                    #     self.api.logger.error(f"Multiple bus lines found for station {stationName}. Only one bus line is supported. Using both sets of predictions.")
-                    #     if self.api.DEBUG:
-                    #         self.api.logger.debug(f"Existing BusLine: {BusLine[0]}")
-                    #         self.api.logger.debug(f"New BusLine attempt: {stop}")
-                    #     continue
-
                 if not preds: continue
-
                 BusLines.append((stop, preds))
 
 
@@ -229,7 +215,6 @@ class StationDataFormater:
 
     def _to_minutes(self, pred: IndiviualPrediction) -> int:
         """Convert prediction wait time to minutes for sorting."""
-        # Use a lookup table for special cases
         special_cases = {
             "Boarding": -100,
             "Arriving": -99,

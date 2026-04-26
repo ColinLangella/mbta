@@ -1,29 +1,13 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>System Alerts - MBTA Monitor</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+{% extends 'base.html' %}
+{% block title %}System Alerts - MBTA Monitor{% endblock %}
 
-    <style>
-        body { font-family: 'Inter', sans-serif; }
-        .scroller::-webkit-scrollbar { width: 6px; }
-        .scroller::-webkit-scrollbar-track { background: transparent; }
-        .scroller::-webkit-scrollbar-thumb { background-color: rgba(156, 163, 175, 0.5); border-radius: 20px; }
-        [v-cloak] { display: none; }
-    </style>
-</head>
-<body id="app" :class="theme.bg + ' ' + theme.text" class="min-h-screen transition-colors duration-300" v-cloak>
-
+{% block body %}
     <div v-if="loading && rawAlerts.length === 0" class="flex items-center justify-center h-screen">
         <div class="animate-spin rounded-full h-12 w-12 border-b-2" :class="theme.border"></div>
     </div>
 
     <div v-else class="container mx-auto p-4 max-w-4xl">
-        
+
         <header class="mb-8 flex justify-between items-end border-b pb-4" :class="theme.borderColor">
             <div>
                 <a href="/stations" class="text-sm opacity-50 hover:opacity-100 transition-opacity mb-1 inline-flex items-center gap-1">← Stations</a>
@@ -33,27 +17,30 @@
             <div class="text-right">
                 <div class="text-sm font-mono opacity-60">[[ currentTime ]]</div>
                 <div class="text-xs font-bold mt-1 text-blue-500">System Live</div>
+                <button @click="toggleDark" class="text-xs opacity-50 hover:opacity-100 transition-opacity mt-1 cursor-pointer block ml-auto">
+                    <span v-if="isDark">☀ Light</span><span v-else>☾ Dark</span>
+                </button>
             </div>
         </header>
 
         <div v-for="section in groupedAlerts" :key="section.title" class="mb-12">
-            
+
             <div class="flex items-center gap-3 mb-6">
                 <div class="w-2 h-8 rounded-full bg-blue-600"></div>
                 <h2 class="text-2xl font-bold">[[ section.title ]]</h2>
             </div>
 
             <div v-if="section.alerts.length > 0" class="grid grid-cols-1 gap-6">
-                <div v-for="alert in section.alerts" :key="alert.id" 
+                <div v-for="alert in section.alerts" :key="alert.id"
                      class="rounded-xl shadow-lg overflow-hidden border border-opacity-20 flex flex-col"
                      :class="[theme.cardBg, theme.borderColor]">
-                    
+
                     <div class="h-2 w-full" :class="getSeverityColor(alert.severity)"></div>
 
                     <div class="p-5">
                         <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
                             <span class="text-xs font-bold uppercase tracking-widest text-blue-500">
-                                [[ alert.lifecycle ]] 
+                                [[ alert.lifecycle ]]
                                 <span v-if="alert.timeframe" class="opacity-60 ml-1">([[ alert.timeframe ]])</span>
                             </span>
                             <span class="text-xs font-mono opacity-50">
@@ -67,9 +54,7 @@
                             </span>
                         </div>
 
-                        <h3 class="text-xl font-bold mb-4 leading-snug">
-                            [[ alert.header ]]
-                        </h3>
+                        <h3 class="text-xl font-bold mb-4 leading-snug">[[ alert.header ]]</h3>
 
                         <div v-if="alert.affected_routes?.length" class="flex flex-wrap gap-2 mb-4">
                             <span v-for="route in alert.affected_routes" :key="route"
@@ -93,106 +78,65 @@
             </div>
         </div>
     </div>
+{% endblock %}
 
-    <script>
-        const { createApp, ref, onMounted, computed } = Vue;
+{% block page_script %}
+    const SECTIONS = [
+        { title: "Subway & Light Rail", types: [0, 1] },
+        { title: "Commuter Rail",       types: [2] },
+        { title: "Bus",                 types: [3] },
+        { title: "Ferry",               types: [4] }
+    ];
 
-        const app = createApp({
-            delimiters: ['[[', ']]'], 
-            
-            setup() {
-                const rawAlerts = ref([]);
-                const allowedTypes = ref([]);
-                const loading = ref(true);
-                const currentTime = ref('');
-                
-                // Matches the theme logic from station_data.html
-                const IS_DARK_MODE = false;
+    const app = createApp({
+        delimiters: ['[[', ']]'],
+        setup() {
+            const rawAlerts   = ref([]);
+            const allowedTypes = ref([]);
+            const loading     = ref(true);
+            const currentTime = ref('');
 
-                const theme = computed(() => {
-                    return IS_DARK_MODE ? {
-                        bg: 'bg-gray-900', text: 'text-gray-100', cardBg: 'bg-gray-800',
-                        itemBg: 'bg-gray-700', border: 'border-gray-600', borderColor: 'border-gray-700'
-                    } : {
-                        bg: 'bg-gray-100', text: 'text-gray-900', cardBg: 'bg-white',
-                        itemBg: 'bg-gray-50', border: 'border-gray-300', borderColor: 'border-gray-200'
-                    };
-                });
+            const groupedAlerts = computed(() =>
+                SECTIONS
+                    .filter(sec => sec.types.some(t => allowedTypes.value.includes(t)))
+                    .map(sec => ({ title: sec.title, alerts: rawAlerts.value.filter(a => sec.types.includes(a.min_route_type)) }))
+            );
 
-                // Sections definitions as requested
-                const SECTIONS = [
-                    { title: "Subway & Light Rail", types: [0, 1] },
-                    { title: "Commuter Rail", types: [2] },
-                    { title: "Bus", types: [3] },
-                    { title: "Ferry", types: [4] }
-                ];
+            const fetchData = async () => {
+                try {
+                    const data = await fetch('/api/alerts').then(r => r.json());
+                    rawAlerts.value    = data.alerts;
+                    allowedTypes.value = data.allowed_route_types;
+                } catch (e) {
+                    console.error("Error fetching alerts:", e);
+                } finally {
+                    loading.value = false;
+                }
+            };
 
-                const groupedAlerts = computed(() => {
-                    // 1. Filter sections to only those containing at least one "allowed" type
-                    const activeSections = SECTIONS.filter(sec => 
-                        sec.types.some(t => allowedTypes.value.includes(t))
-                    );
+            const getSeverityColor = (severity) => {
+                if (severity >= 7) return 'bg-red-600';
+                if (severity >= 4) return 'bg-orange-500';
+                return 'bg-yellow-400';
+            };
 
-                    // 2. Map the alerts into these sections
-                    return activeSections.map(sec => {
-                        return {
-                            title: sec.title,
-                            alerts: rawAlerts.value.filter(a => sec.types.includes(a.min_route_type))
-                        };
-                    });
-                });
+            const formatTime = (isoString) => {
+                if (!isoString) return 'Unknown';
+                return new Date(isoString).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+            };
 
-                const fetchData = async () => {
-                    try {
-                        const response = await fetch('/api/alerts');
-                        const data = await response.json();
-                        rawAlerts.value = data.alerts;
-                        allowedTypes.value = data.allowed_route_types;
-                    } catch (error) {
-                        console.error("Error fetching alerts:", error);
-                    } finally {
-                        loading.value = false;
-                    }
-                };
+            const updateTime = () => {
+                currentTime.value = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            };
 
-                const getSeverityColor = (severity) => {
-                    if (severity >= 7) return 'bg-red-600';
-                    if (severity >= 4) return 'bg-orange-500';
-                    return 'bg-yellow-400';
-                };
+            onMounted(() => {
+                fetchData();
+                updateTime();
+                setInterval(fetchData,   30000);
+                setInterval(updateTime,   1000);
+            });
 
-                const formatTime = (isoString) => {
-                    if (!isoString) return 'Unknown';
-                    const date = new Date(isoString);
-                    return date.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-                };
-
-                const updateTime = () => {
-                    const now = new Date();
-                    currentTime.value = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-                };
-
-                onMounted(() => {
-                    fetchData();
-                    updateTime();
-                    setInterval(fetchData, 30000);
-                    setInterval(updateTime, 1000);
-                });
-
-                return {
-                    rawAlerts,
-                    allowedTypes,
-                    groupedAlerts,
-                    loading,
-                    theme,
-                    currentTime,
-                    getSeverityColor,
-                    formatTime
-                };
-            }
-        });
-
-        app.mount('#app');
-    </script>
-</body>
-</html>
+            return { rawAlerts, allowedTypes, groupedAlerts, loading, theme, isDark, toggleDark, currentTime, getSeverityColor, formatTime };
+        }
+    });
+{% endblock %}

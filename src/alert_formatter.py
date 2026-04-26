@@ -8,24 +8,21 @@ class FormattedAlert:
     service_effect: str
     severity: int
     updated_at: str
-    lifecycle: str       # Added
-    timeframe: str       # Added
-    min_route_type: Optional[int] # Added
+    lifecycle: str
+    timeframe: str
+    min_route_type: Optional[int]
     image_url: Optional[str] = None
     image_alt: Optional[str] = None
     affected_routes: List[str] = None
 
-class AlertDataFormater:
-    def __init__(self, api):
-        self.api = api
-
+class AlertDataFormatter:
     def format_alerts(self, raw_alerts: list) -> List[FormattedAlert]:
         formatted_list = []
-        
+
         for alert_obj in raw_alerts:
             data = alert_obj.to_dict()
             attr = data.get("attributes", {})
-            
+
             # Find the lowest route type in the informed_entities list
             entities = attr.get("informed_entity", [])
             route_types = [e.get("route_type") for e in entities if e.get("route_type") is not None]
@@ -33,8 +30,8 @@ class AlertDataFormater:
 
             # Extract unique affected routes
             routes = list(set(
-                entity.get("route") 
-                for entity in entities 
+                entity.get("route")
+                for entity in entities
                 if entity.get("route")
             ))
 

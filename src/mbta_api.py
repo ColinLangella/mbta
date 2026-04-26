@@ -1,6 +1,7 @@
 # General Imports
-import os, logging
+import os, json, logging
 from json import dumps
+from typing import Callable, Any
 
 # Typing Imports
 from dataclasses import dataclass, asdict
@@ -10,7 +11,7 @@ from typing import Optional, List, Dict
 # based on `https://api-v3.mbta.com/docs/swagger/index.html#`
 import mbta_client
 from mbta_client import api_client, configuration
-from mbta_client.api import alert_api, prediction_api, stop_api, trip_api, vehicle_api, route_api
+from mbta_client.api import alert_api, prediction_api, stop_api, route_api
 from mbta_client.models import alert_resource, prediction_resource, stop_resource, trip_resource, vehicle_resource, route_resource
 from mbta_client.api_response import ApiResponse
 
@@ -40,9 +41,6 @@ class MBTA_API:
         'INCOMING_AT': 'Arriving',
         'IN_TRANSIT_TO': 'Next Stop' }
 
-    MY_LATITUDE  =  42.3564
-    MY_LONGITUDE = -71.0622
-
     # Cache TTL settings (seconds)
     STOPS_CACHE_TTL  = 86400    # 24 hours
     TRIPS_CACHE_TTL  = 3600     # 1 hour
@@ -64,7 +62,7 @@ class MBTA_API:
         stopColor:   Optional[str] = None
 
 
-    @dataclass
+    @dataclass(frozen=True)
     class CollectedPrediction:
         """Dataclass to hold raw important information about a prediction"""
         prediction: prediction_resource.PredictionResource
@@ -100,8 +98,6 @@ class MBTA_API:
         self._alert      = alert_api.AlertApi(api_client=self._api_client)
         self._prediction = prediction_api.PredictionApi(api_client=self._api_client)
         self._stop       = stop_api.StopApi(api_client=self._api_client)
-        self._trip       = trip_api.TripApi(api_client=self._api_client)
-        self._vehicle    = vehicle_api.VehicleApi(api_client=self._api_client)
         self._route      = route_api.RouteApi(api_client=self._api_client)
 
 
@@ -130,59 +126,139 @@ class MBTA_API:
         self.cache.set(key, response.data.data, last_modified=response.headers.get('last-modified'))
 
 
-    def getSubwayAlerts(self, routeType=None) -> list[alert_resource.AlertResource]:
-        """Get subway alerts with caching and HTTP last modified headers."""
+    def _cached_request(self, cache_key: str, ttl_seconds: int, fetch_fn: Callable[[], ApiResponse], extract_fn: Callable[[ApiResponse], Any] = None) -> Any:
+        """Fetch with TTL cache and HTTP 304 support. extract_fn defaults to r.data.data."""
+        if extract_fn is None:
+            extract_fn = lambda r: r.data.data
 
-        if self.DEBUG: self.logger.debug("Fetching subway alerts...")
-        exp, cached = self.cache.get("Alerts", ttl_seconds=self.ALERTS_CACHE_TTL)
-
+        exp, cached = self.cache.get(cache_key, ttl_seconds=ttl_seconds)
         if not exp and cached is not None:
-            if self.DEBUG: self.logger.debug("Returning cached subway alerts")
+            if self.DEBUG: self.logger.debug(f"Cache hit for '{cache_key}'")
             return cached.data
 
-        if self.DEBUG: self.logger.info("Fetching alerts from MBTA API")
-        httpResponse = self._alert.api_web_alert_controller_index_with_http_info(
-            filter_route_type = routeType or self.ROUTE_TYPE,
-            _headers = self.cache.get_cache_headers("Alerts") )
+        response = fetch_fn()
 
-        if httpResponse.status_code == 304:
-            self.cache.refresh("Alerts")
-            if not cached: raise ValueError("Received 304 Not Modified for alerts but no cached data is available.")
-            if self.DEBUG: self.logger.debug("Received 304 Not Modified for alerts, returning cached data")
+        if response.status_code == 304:
+            self.cache.refresh(cache_key)
+            if cached is None:
+                raise ValueError(f"Received 304 Not Modified for '{cache_key}' but no cached data available.")
+            if self.DEBUG: self.logger.debug(f"304 Not Modified for '{cache_key}', returning cached data")
             return cached.data
-        elif 200 <= httpResponse.status_code < 300:
-            self._cacheResponse("Alerts", httpResponse)
-            return httpResponse.data.data
+        elif 200 <= response.status_code < 300:
+            remaining = response.headers.get('x-ratelimit-remaining')
+            if remaining is not None and int(remaining) < 20:
+                self.logger.warning(f"Rate limit low: {remaining} requests remaining (resets: {response.headers.get('x-ratelimit-reset')})")
+            self._cacheResponse(cache_key, response)
+            return extract_fn(response)
         else:
-            self.logger.error(f"Failed to fetch alerts. HTTP status code: {httpResponse.status_code}")
+            self.logger.error(f"Failed to fetch '{cache_key}'. HTTP status code: {response.status_code}")
             return []
+
+
+    def _parse_included(self, raw_data: bytes) -> Dict[str, Dict[str, Any]]:
+        """Parse the 'included' array from a raw JSONAPI response into typed model objects.
+        Returns { "trip": {id: TripResource}, "vehicle": {id: VehicleResource}, ... }
+        """
+        result: Dict[str, Dict[str, Any]] = {"trip": {}, "vehicle": {}, "route": {}, "stop": {}}
+        try:
+            body = json.loads(raw_data)
+        except (json.JSONDecodeError, TypeError):
+            return result
+
+        type_map = {
+            "trip":    trip_resource.TripResource.from_dict,
+            "vehicle": vehicle_resource.VehicleResource.from_dict,
+            "route":   route_resource.RouteResource.from_dict,
+            "stop":    stop_resource.StopResource.from_dict,
+        }
+
+        for item in body.get("included", []):
+            rtype = item.get("type")
+            rid   = item.get("id")
+            if rtype in type_map and rid:
+                try:
+                    result[rtype][rid] = type_map[rtype](item)
+                except Exception as e:
+                    self.logger.warning(f"Failed to parse included {rtype} {rid}: {e}")
+
+        return result
+
+
+    def _rel_id(self, pred: "prediction_resource.PredictionResource", rel_type: str) -> Optional[str]:
+        """Extract the relationship ID from a prediction resource safely."""
+        rel = getattr(pred.relationships, rel_type, None) if pred.relationships else None
+        return rel.data.id if rel and rel.data else None
+
+
+    def _fetch_predictions_with_related(self, stopId: str) -> "list[MBTA_API.CollectedPrediction]":
+        """Fetch predictions for a stop with trip, vehicle, route in one call.
+        Replaces the separate prediction + fan-out pattern. Handles TTL cache and HTTP 304.
+        """
+        cacheKey = f"PredictionsRelated_{stopId}"
+        exp, cached = self.cache.get(cacheKey, ttl_seconds=self.PREDICTIONS_CACHE_TTL)
+        if not exp and cached is not None:
+            if self.DEBUG: self.logger.debug(f"Cache hit for '{cacheKey}'")
+            return cached.data
+
+        if self.DEBUG: self.logger.debug(f"Fetching predictions+related for stop {stopId}")
+
+        response = self._prediction.api_web_prediction_controller_index_with_http_info(
+            filter_stop = stopId,
+            include     = "trip,vehicle,route",
+            page_limit  = self.MAX_LEN,
+            _headers    = self.cache.get_cache_headers(cacheKey) )
+
+        if response.status_code == 304:
+            self.cache.refresh(cacheKey)
+            if cached is None:
+                raise ValueError(f"Received 304 for '{cacheKey}' but no cached data available.")
+            if self.DEBUG: self.logger.debug(f"304 Not Modified for '{cacheKey}'")
+            return cached.data
+
+        if not (200 <= response.status_code < 300):
+            self.logger.error(f"Failed to fetch predictions for stop {stopId}: HTTP {response.status_code}")
+            return []
+
+        remaining = response.headers.get('x-ratelimit-remaining')
+        if remaining is not None and int(remaining) < 20:
+            self.logger.warning(f"Rate limit low: {remaining} requests remaining (resets: {response.headers.get('x-ratelimit-reset')})")
+
+        predictions = response.data.data or []
+        included    = self._parse_included(response.raw_data)
+
+        collected = [
+            self.CollectedPrediction(
+                prediction = p,
+                trip    = included["trip"].get(   self._rel_id(p, "trip")    ),
+                vehicle = included["vehicle"].get( self._rel_id(p, "vehicle") ),
+                route   = included["route"].get(   self._rel_id(p, "route")   ),
+            ) for p in predictions
+        ]
+
+        self.cache.set(cacheKey, collected, last_modified=response.headers.get('last-modified'))
+        return collected
+
+
+    def getSubwayAlerts(self, routeType=None) -> list[alert_resource.AlertResource]:
+        """Get subway alerts with caching and HTTP 304 support."""
+        if self.DEBUG: self.logger.debug("Fetching subway alerts...")
+        return self._cached_request(
+            cache_key   = "Alerts",
+            ttl_seconds = self.ALERTS_CACHE_TTL,
+            fetch_fn    = lambda: self._alert.api_web_alert_controller_index_with_http_info(
+                filter_route_type = routeType or self.ROUTE_TYPE,
+                _headers          = self.cache.get_cache_headers("Alerts") ) )
 
 
     def getSubwayStops(self, routeType=None) -> list[stop_resource.StopResource]:
-        """Get subway stops with caching and HTTP last modified headers."""
-
+        """Get subway stops with caching and HTTP 304 support."""
         if self.DEBUG: self.logger.debug("Fetching subway stops...")
-        exp, cached = self.cache.get("Stops", ttl_seconds=self.STOPS_CACHE_TTL)
-
-        if not exp and cached is not None:
-            if self.DEBUG: self.logger.debug("Returning cached subway stops")
-            return cached.data
-
-        if self.DEBUG: self.logger.info("Fetching subway stops from MBTA API")
-        httpResponse = self._stop.api_web_stop_controller_index_with_http_info(
-            filter_route_type = routeType or self.ROUTE_TYPE,
-            _headers = self.cache.get_cache_headers("Stops") )
-
-        if httpResponse.status_code == 304:
-            self.cache.refresh("Stops")
-            if self.DEBUG: self.logger.debug("Received 304 Not Modified for subway stops, returning cached data")
-            return cached.data
-        elif 200 <= httpResponse.status_code < 300:
-            self._cacheResponse("Stops", httpResponse)
-            return httpResponse.data.data
-        else:
-            self.logger.error(f"Failed to fetch subway stops. HTTP status code: {httpResponse.status_code}")
-            return []
+        return self._cached_request(
+            cache_key   = "Stops",
+            ttl_seconds = self.STOPS_CACHE_TTL,
+            fetch_fn    = lambda: self._stop.api_web_stop_controller_index_with_http_info(
+                filter_route_type = routeType or self.ROUTE_TYPE,
+                _headers          = self.cache.get_cache_headers("Stops") ) )
 
 
     def getStopsByIds(self, stopIds: str) -> list[stop_resource.StopResource]:
@@ -193,7 +269,7 @@ class MBTA_API:
         return [ stop for stop in self.getSubwayStops() if stop.id in stopIds ]
 
 
-    def getStopsNearLocation(self, lat: float = MY_LATITUDE, lon: float = MY_LONGITUDE, radiusMiles: float = 0.8, overrideRouteType: Optional[str] = None) -> list[stop_resource.StopResource]:
+    def getStopsNearLocation(self, lat: float, lon: float, radiusMiles: float = 0.8, overrideRouteType: Optional[str] = None) -> list[stop_resource.StopResource]:
         """Get stops near a specific latitude and longitude within a given radius."""
 
         # Convert radius from miles to degrees (approximate specifically for MBTA area)
@@ -210,286 +286,35 @@ class MBTA_API:
         ).data
 
 
-    def getPredictionsFromStopId(self, stopId: str) -> list[prediction_resource.PredictionResource]:
-        """Get predictions for a specific stop ID with caching and HTTP last modified headers."""
-
-        if self.DEBUG: self.logger.debug(f"Fetching predictions for stop ID: {stopId}")
-        cacheStr    = f"Predictions_{stopId}"
-        exp, cached = self.cache.get(cacheStr, ttl_seconds=self.PREDICTIONS_CACHE_TTL)
-
-        if not exp and cached is not None:
-            if self.DEBUG: self.logger.debug("Returning cached predictions")
-            return cached.data
-
-        if self.DEBUG: self.logger.info("Fetching predictions from MBTA API")
-        httpResponse = self._prediction.api_web_prediction_controller_index_with_http_info(
-            filter_stop = stopId, page_limit = self.MAX_LEN,
-            _headers = self.cache.get_cache_headers(cacheStr) )
-
-        if httpResponse.status_code == 304:
-            self.cache.refresh(cacheStr)
-            if self.DEBUG: self.logger.debug("Received 304 Not Modified for predictions, returning cached data")
-            return cached.data
-        elif 200 <= httpResponse.status_code < 300:
-            self._cacheResponse(cacheStr, httpResponse)
-            return httpResponse.data.data
-        else:
-            self.logger.error(f"Failed to fetch predictions for stop ID {stopId}. HTTP status code: {httpResponse.status_code}")
-            return []
-
-
-    def getTripsById(self, tripId: str) -> list[trip_resource.TripResource]:
-        """Get trip details by ID with caching and HTTP last modified headers."""
-
-        ## In the short term, the benefits of caching trip data are limited
-        ## as trip changes too frequently. So for now we'll just fetch it fresh.
-
-        ## TODO: Future improvement: loop through trip IDs and cache them
-
-
-        if self.DEBUG: self.logger.debug(f"Fetching trip ID from API: {tripId}")
-        ret = self._trip.api_web_trip_controller_index(
-            filter_id=tripId ).data
-        if self.DEBUG: self.logger.debug(f"Found trip matching ID: {tripId}")
-        return ret
-
-
-    def getVehicleById(self, trainId: str) -> list[vehicle_resource.VehicleResource]:
-        """Get vehicle details by ID with caching and HTTP last modified headers."""
-
-        ## NOTE: Same as trips, vehicle data changes frequently
-        ## so caching is not very beneficial in the short term.
-
-        if self.DEBUG: self.logger.debug(f"Fetching train ID: {trainId}")
-        return self._vehicle.api_web_vehicle_controller_index(
-            filter_id=trainId ).data
-
-
-    def getRouteById(self, routeId: str) -> route_resource.RouteResource:
-        """Get route details by ID."""
-
-        # cache routes individually with 1hr ttl
-        cacheStr = f"Route_{routeId}"
-        exp, cached = self.cache.get(cacheStr, ttl_seconds=self.TRIPS_CACHE_TTL)
-
-        if not exp and cached is not None:
-            if self.DEBUG: self.logger.debug(f"Returning cached route for ID: {routeId}")
-            return cached.data[0]
-
-        if self.DEBUG: self.logger.info("Fetching routes from MBTA API")
-        httpResponse = self._route.api_web_route_controller_index_with_http_info(
-            filter_id = routeId, page_limit = self.MAX_LEN,
-            _headers = self.cache.get_cache_headers(cacheStr) )
-
-        if httpResponse.status_code == 304:
-            self.cache.refresh(cacheStr)
-            if self.DEBUG: self.logger.debug(f"Received 304 Not Modified for route {routeId}, returning cached data")
-            return cached.data[0]
-        elif 200 <= httpResponse.status_code < 300:
-            self._cacheResponse(cacheStr, httpResponse)
-            return httpResponse.data.data[0]
-        else:
-            self.logger.error(f"Failed to fetch route {routeId}. HTTP status code: {httpResponse.status_code}")
-            return []
-
-
-    def getRoutesByIds(self, routeIds: str):
-        """Get multiple routes by comma-separated IDs."""
-
-        routeList = routeIds.split(",")
-        routeFutures = [ self._executor.submit(
-            self.getRouteById, rId
-        ) for rId in routeList ]
-
-        return [ f.result() for f in routeFutures ]
-
-
-    def zgetStationPredictions(self, stationName: str = "Lechmere") -> Dict[str, List[CurrentStopInfo]]:
-        """
-        Refactored to avoid nested deadlock by batching API calls.
-        Uses existing class methods: getStops, getPredictions, getTrips, getVehicles, getRoutes.
-        """
-        if self.DEBUG: self.logger.debug(f"Fetching predictions for station: {stationName}")
-
-        # 1. Get all stops (platforms/bus berths) for this station name
-        allStops = self.getStops(filter_name=stationName)
-        
-        # 2. Filter by allowed route types (e.g., Subway and Bus)
-        allowedTypes = [int(x.strip()) for x in self.ROUTE_TYPE.split(",")]
-        relevantStops = [s for s in allStops if s.attributes.vehicle_type in allowedTypes]
-        
-        if not relevantStops:
-            return {}
-
-        # Create a map for quick lookup and a comma-separated string of IDs for the API
-        stopIdMap = {s.id: s for s in relevantStops}
-        stopIdsStr = ",".join(stopIdMap.keys())
-
-        # 3. Batch fetch ALL predictions for all stops at once
-        # The MBTA API 'filter[stop]' parameter accepts a comma-separated list.
-        allPredictions = self.getPredictions(stopIdsStr)
-        
-        if not allPredictions:
-            # Return empty lists for each platform so the UI shows "No Arrivals" instead of a blank page
-            return {s.attributes.platform_name or s.attributes.name: [] for s in relevantStops}
-
-        # 4. Collect all unique IDs for relationships across the entire station
-        tripIds = set()
-        vehicleIds = set()
-        routeIds = set()
-
-        for pred in allPredictions:
-            if pred.relationships.trip.data:    tripIds.add(pred.relationships.trip.data.id)
-            if pred.relationships.vehicle.data: vehicleIds.add(pred.relationships.vehicle.data.id)
-            if pred.relationships.route.data:   routeIds.add(pred.relationships.route.data.id)
-
-        # 5. Fetch all relationship data in parallel batches
-        # These call the existing methods in your class that already handle lists of IDs
-        futures = {
-            'trips':    self._executor.submit(self.getTrips, list(tripIds)),
-            'vehicles': self._executor.submit(self.getVehicles, list(vehicleIds)),
-            'routes':   self._executor.submit(self.getRoutes, list(routeIds))
-        }
-
-        # Build lookup maps from the results
-        # No nested .submit() calls here = No deadlock.
-        tripMap    = {t.id: t for t in futures['trips'].result()}
-        vehicleMap = {v.id: v for v in futures['vehicles'].result()}
-        routeMap   = {r.id: r for r in futures['routes'].result()}
-
-        # 6. Organize predictions by platform name
-        finalData = {}
-        for stop in relevantStops:
-            platformKey = stop.attributes.platform_name or stop.attributes.name
-            
-            # Find predictions associated with this specific stop ID
-            stopPreds = [p for p in allPredictions if p.relationships.stop.data.id == stop.id]
-            
-            infoList = []
-            for pred in stopPreds:
-                # Resolve the related objects using our pre-fetched maps
-                t_id = pred.relationships.trip.data.id if pred.relationships.trip.data else None
-                v_id = pred.relationships.vehicle.data.id if pred.relationships.vehicle.data else None
-                r_id = pred.relationships.route.data.id if pred.relationships.route.data else None
-
-                infoList.append(self.CurrentStopInfo(
-                    prediction = pred,
-                    trip       = tripMap.get(t_id),
-                    vehicle    = vehicleMap.get(v_id),
-                    stop       = stop,
-                    route      = routeMap.get(r_id)
-                ))
-            
-            finalData[platformKey] = infoList
-
-        return finalData
+    def getRoutesByIds(self, routeIds: str) -> list[route_resource.RouteResource]:
+        """Get multiple routes by comma-separated IDs in a single batch request."""
+        if self.DEBUG: self.logger.debug(f"Fetching routes by IDs: {routeIds}")
+        cacheKey = f"Routes_{routeIds}"
+        return self._cached_request(
+            cache_key   = cacheKey,
+            ttl_seconds = self.TRIPS_CACHE_TTL,
+            fetch_fn    = lambda: self._route.api_web_route_controller_index_with_http_info(
+                filter_id  = routeIds,
+                page_limit = self.MAX_LEN,
+                _headers   = self.cache.get_cache_headers(cacheKey) ) )
 
 
     def getStationPredictions(self, stopName="Lechmere"):
-        """
-        Fetch predictions for all station descriptions matching stopName.
-        Parallelized over all stopIds.
-        """
-
-        def getPredData(predInfo: list[prediction_resource.PredictionResource]):
-            """Fetch trip and vehicle data for predictions in parallel."""
-            try:
-                ### Start by reoganizing input data
-
-                # Subset of PredictionResourceRelationships.__properties
-                importantRelTypes = [
-                    "vehicle",
-                    "trip",
-                #   "stop",
-                    "route"]
-
-                # [ ( pred, { "vehicle": vID, "trip": tID, "stop": sID, "route": rID } ), ... ]
-                expandedInfo = [ (
-                    p, {
-                        relType: getattr(p.relationships, relType).data.id
-                        if (p.relationships is not None) and (getattr(p.relationships, relType) is not None) and (getattr(p.relationships, relType).data is not None)
-                        else None for relType in importantRelTypes } )
-                    for p in predInfo ]
-
-                # { "vehicle" : { vID ... }, "trip" { tID ... }, "stop" { sID ... }, "route": { rID ... } }
-                allRelationshipIds = {
-                    relType: { data[relType] for _, data in expandedInfo if data[relType] is not None }
-                    for relType in importantRelTypes }
-
-                # Fetch data in parallel
-                allRelationshipData = {}
-                for relType in importantRelTypes:
-                    relIds    = allRelationshipIds[relType]
-                    haveAnyId = (len(relIds) > 0)
-
-                    if haveAnyId:
-                        if self.DEBUG: self.logger.debug(f"Fetching related {relType} data for {len(relIds)} unique IDs: {relIds}")
-
-                        correctFunction = {
-                            "vehicle": self.getVehicleById,
-                            "trip":    self.getTripsById,
-                            "stop":    self.getStopsByIds,
-                            "route":   self.getRoutesByIds
-                        }[relType]
-
-                        relFutures = self._executor.submit(
-                            correctFunction, ",".join(list(relIds)) )
-                        allRelationshipData[relType] = (haveAnyId, relFutures)
-
-                        if self.DEBUG: self.logger.debug(f"Done: Fetching related {relType} data for {len(relIds)} unique IDs: {relIds}")
-                    else:
-                        allRelationshipData[relType] = (haveAnyId, None)
-
-                # Collect data
-                for relType in importantRelTypes:
-                    haveAnyId, relFutures = allRelationshipData[relType]
-                    if haveAnyId:
-                        dataMap = { i.id: i for i in relFutures.result() }
-                        allRelationshipData[relType] = (haveAnyId, dataMap)
-
-                # Create output
-                return [
-                    self.CollectedPrediction(
-                        prediction = p,
-                        trip       = allRelationshipData["trip"][1].get(data["trip"])       if ("trip" in data) and (data["trip"] is not None)       else None,
-                        vehicle    = allRelationshipData["vehicle"][1].get(data["vehicle"]) if ("vehicle" in data) and (data["vehicle"] is not None) else None,
-                    #   stop       = allRelationshipData["stop"][1].get(data["stop"])       if ("stop" in data) and (data["stop"] is not None)       else None,
-                        route      = allRelationshipData["route"][1].get(data["route"])     if ("route" in data) and (data["route"] is not None)     else None
-                    ) for p, data in expandedInfo ]
-
-            except Exception as e:
-                self.logger.exception(f"Exception while trying to gedPredData: {e}")
-                if self.DEBUG: self.logger.debug(predInfo)
-                return [ self.CollectedPrediction(p) for p in predInfo ]
-
-
-        def processStop(stop: MBTA_API.CurrentStopInfo):
-            """Process a single stop to get predictions."""
-            if self.DEBUG: self.logger.debug(f"Processing stop: {stop.description} (ID: {stop.stopId})")
-
-            preds    = self.getPredictionsFromStopId(stop.stopId)
-            predInfo = getPredData(preds)
-
-            return stop, predInfo
-
-
-        # Get all subway stops
+        """Fetch predictions for all stops matching stopName, with related resources included."""
         stops = self.getSubwayStops()
-        matchingStops = { MBTA_API.CurrentStopInfo ( 
-                            stopId   = stop.id,
-                            stopName = stop.attributes.name,
+        matchingStops = { MBTA_API.CurrentStopInfo(
+                            stopId      = stop.id,
+                            stopName    = stop.attributes.name,
                             description = stop.attributes.description,
-                            routeType = stop.attributes.vehicle_type,
-                            platName = stop.attributes.platform_name,
-                            stopColor = stop.attributes.description.split("-")[1].strip() if (stop.attributes.vehicle_type in (self.ROUTE_TYPE_LIGHTRAIL, self.ROUTE_TYPE_SUBWAY)) else None
+                            routeType   = stop.attributes.vehicle_type,
+                            platName    = stop.attributes.platform_name,
+                            stopColor   = stop.attributes.description.split("-")[1].strip() if (stop.attributes.vehicle_type in (self.ROUTE_TYPE_LIGHTRAIL, self.ROUTE_TYPE_SUBWAY)) else None
                         ) for stop in stops if stop.attributes.name == stopName }
 
-        # Use ThreadPoolExecutor to process stops in parallel
-        futures = [
-            self._executor.submit(processStop, stop)
-            for stop in matchingStops ]
+        futures = [ (stop, self._executor.submit(self._fetch_predictions_with_related, stop.stopId))
+                    for stop in matchingStops ]
 
-        return dict(f.result() for f in futures)
+        return { stop: f.result() for stop, f in futures }
 
 
 if __name__ == '__main__':
@@ -596,7 +421,7 @@ if __name__ == '__main__':
 
     def testGetStopsNearLocation():
         api.DEBUG = True
-        stops = api.getStopsNearLocation()
+        stops = api.getStopsNearLocation(lat=42.3564, lon=-71.0622)
         for stop in stops:
             print("\n----------------------------\n")
             pprint(stop.to_dict())

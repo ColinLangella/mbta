@@ -1,31 +1,13 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Station Monitor</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+{% extends 'base.html' %}
+{% block title %}{{ station_name }} - MBTA Monitor{% endblock %}
 
-    <style>
-        body { font-family: 'Inter', sans-serif; }
-        .scroller::-webkit-scrollbar { width: 6px; }
-        .scroller::-webkit-scrollbar-track { background: transparent; }
-        .scroller::-webkit-scrollbar-thumb { background-color: rgba(156, 163, 175, 0.5); border-radius: 20px; }
-        
-        /* Prevent FOUC (Flash of Unstyled Content) for Vue */
-        [v-cloak] { display: none; }
-    </style>
-</head>
-<body id="app" :class="theme.bg + ' ' + theme.text" class="min-h-screen transition-colors duration-300" v-cloak>
-
+{% block body %}
     <div v-if="loading && !stationData" class="flex items-center justify-center h-screen">
         <div class="animate-spin rounded-full h-12 w-12 border-b-2" :class="theme.border"></div>
     </div>
 
     <div v-else class="container mx-auto p-4 max-w-6xl">
-        
+
         <header class="mb-8 flex justify-between items-center border-b pb-4" :class="theme.borderColor">
             <div>
                 <a href="/stations" class="text-sm opacity-50 hover:opacity-100 transition-opacity mb-1 inline-flex items-center gap-1">← Stations</a>
@@ -34,47 +16,44 @@
             </div>
             <div class="text-right">
                 <div class="text-sm font-mono opacity-60">[[ currentTime ]]</div>
-                <div v-if="isDemoMode" class="text-xs text-orange-500 font-bold mt-1">DEMO MODE ACTIVE</div>
+                <div class="text-xs mt-1" :class="connected ? 'text-green-500' : 'text-orange-400'">
+                    [[ connected ? '● Live' : '○ Reconnecting…' ]]
+                </div>
+                <button @click="toggleDark" class="text-xs opacity-50 hover:opacity-100 transition-opacity mt-1 cursor-pointer block ml-auto">
+                    <span v-if="isDark">☀ Light</span><span v-else>☾ Dark</span>
+                </button>
             </div>
         </header>
 
         <div class="grid grid-cols-1 gap-8 mb-8">
-            <div v-for="(line, index) in stationData?.TLines" :key="index" 
+            <div v-for="(line, index) in stationData?.TLines" :key="index"
                  class="rounded-xl shadow-lg overflow-hidden border border-opacity-20"
                  :class="[theme.cardBg, theme.borderColor]">
-                
+
                 <div class="p-4 text-white flex items-center gap-3" :style="{ backgroundColor: '#' + line.LineColor }">
                     <h2 class="text-2xl font-bold">[[ line.LineName ]]</h2>
                 </div>
 
                 <div class="flex flex-col md:flex-row divide-y md:divide-y-0 md:divide-x" :class="theme.divideColor">
-                    
+
                     <div v-if="line.Platform1" class="flex-1 p-4">
                         <h3 class="text-lg font-semibold mb-3 flex items-center gap-2 opacity-90">
                             <span class="w-2 h-2 rounded-full bg-current"></span>
                             To [[ line.Platform1.Description ]]
                         </h3>
                         <div class="space-y-2 scroller max-h-96 overflow-y-auto pr-2">
-                            <div v-for="(pred, pIndex) in line.Platform1.Predictions" :key="pIndex" 
-                                 class="flex justify-between items-center p-3 rounded-lg"
-                                 :class="theme.itemBg">
+                            <div v-for="(pred, pIndex) in line.Platform1.Predictions" :key="pIndex"
+                                 class="flex justify-between items-center p-3 rounded-lg" :class="theme.itemBg">
                                 <div>
                                     <div class="font-bold text-lg leading-none">[[ pred.Wait ]]</div>
-
                                     <div v-if="pred.Status" class="mt-1">
-                                        <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-600 text-white">
-                                            [[ pred.Status ]]
-                                        </span>
+                                        <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-600 text-white">[[ pred.Status ]]</span>
                                     </div>
-                                    <div v-else class="text-xs opacity-60 mt-1">
-                                        Scheduled
-                                    </div>
+                                    <div v-else class="text-xs opacity-60 mt-1">Scheduled</div>
                                 </div>
                                 <div class="text-right">
                                     <div class="font-medium">[[ pred.Head ]]</div>
-                                    <div class="text-xs font-mono opacity-50 bg-black bg-opacity-10 px-1 rounded inline-block">
-                                        [[ pred.Route ]]
-                                    </div>
+                                    <div class="text-xs font-mono opacity-50 bg-black bg-opacity-10 px-1 rounded inline-block">[[ pred.Route ]]</div>
                                 </div>
                             </div>
                         </div>
@@ -86,26 +65,18 @@
                             To [[ line.Platform2.Description ]]
                         </h3>
                         <div class="space-y-2 scroller max-h-96 overflow-y-auto pr-2">
-                            <div v-for="(pred, pIndex) in line.Platform2.Predictions" :key="pIndex" 
-                                 class="flex justify-between items-center p-3 rounded-lg"
-                                 :class="theme.itemBg">
+                            <div v-for="(pred, pIndex) in line.Platform2.Predictions" :key="pIndex"
+                                 class="flex justify-between items-center p-3 rounded-lg" :class="theme.itemBg">
                                 <div>
                                     <div class="font-bold text-lg leading-none">[[ pred.Wait ]]</div>
-                                    
                                     <div v-if="pred.Status" class="mt-1">
-                                        <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-600 text-white">
-                                            [[ pred.Status ]]
-                                        </span>
+                                        <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-600 text-white">[[ pred.Status ]]</span>
                                     </div>
-                                    <div v-else class="text-xs opacity-60 mt-1">
-                                        Scheduled
-                                    </div>
+                                    <div v-else class="text-xs opacity-60 mt-1">Scheduled</div>
                                 </div>
                                 <div class="text-right">
                                     <div class="font-medium">[[ pred.Head ]]</div>
-                                    <div class="text-xs font-mono opacity-50 bg-black bg-opacity-10 px-1 rounded inline-block">
-                                        [[ pred.Route ]]
-                                    </div>
+                                    <div class="text-xs font-mono opacity-50 bg-black bg-opacity-10 px-1 rounded inline-block">[[ pred.Route ]]</div>
                                 </div>
                             </div>
                         </div>
@@ -120,40 +91,27 @@
                 <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"></path></svg>
                 Bus Connections
             </h2>
-            
+
             <div v-for="(busGroup, bIndex) in stationData.BusLines" :key="bIndex" class="mb-6">
-                
                 <h3 class="text-xl font-semibold mb-3 border-b pb-2" :class="theme.borderColor">
                     [[ busGroup.BuswayName ]]
                 </h3>
-
-                <div class="rounded-xl shadow-lg overflow-hidden border border-opacity-20 p-4"
-                    :class="[theme.cardBg, theme.borderColor]">
-                    
+                <div class="rounded-xl shadow-lg overflow-hidden border border-opacity-20 p-4" :class="[theme.cardBg, theme.borderColor]">
                     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                        
                         <div v-for="(pred, pIndex) in busGroup.Predictions" :key="pIndex"
-                            class="flex justify-between items-center p-4 rounded-lg border-l-4 border-yellow-500"
-                            :class="theme.itemBg">
-                            
+                             class="flex justify-between items-center p-4 rounded-lg border-l-4 border-yellow-500" :class="theme.itemBg">
                             <div>
                                 <div class="flex items-center gap-2">
                                     <span class="text-xl font-bold">[[ pred.Route ]]</span>
                                     <span class="text-sm opacity-75">to [[ pred.Head ]]</span>
                                 </div>
-                                </div>
-                            
+                            </div>
                             <div class="text-right">
                                 <div class="font-bold text-lg">[[ pred.Wait ]]</div>
-                                
                                 <div v-if="pred.Status" class="mt-0.5">
-                                    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-600 text-white">
-                                        [[ pred.Status ]]
-                                    </span>
+                                    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-600 text-white">[[ pred.Status ]]</span>
                                 </div>
-                                <div v-else class="text-xs opacity-60 mt-0.5">
-                                    Scheduled
-                                </div>
+                                <div v-else class="text-xs opacity-60 mt-0.5">Scheduled</div>
                             </div>
                         </div>
                     </div>
@@ -161,94 +119,51 @@
             </div>
         </div>
     </div>
+{% endblock %}
 
-    <script>
-        const { createApp, ref, onMounted, computed } = Vue;
+{% block page_script %}
+    const STATION_NAME = "{{ station_name }}";
 
-        // --- CONFIGURATION ---
-        // Use Flask's curly here, because this is processed on the server BEFORE Vue sees it
-        const STATION_NAME = "{{ station_name }}"; 
-        
-        const IS_DARK_MODE = false;    
-        const USE_DEMO_DATA = false;   // Set to false for live data
+    const app = createApp({
+        delimiters: ['[[', ']]'],
+        setup() {
+            const stationData = ref(null);
+            const loading     = ref(true);
+            const connected   = ref(false);
+            const currentTime = ref('');
+            let eventSource   = null;
 
-        // Mock data remains the same...
-        const MOCK_DATA = [
-            { "BusLines": [{ "BuswayName": "Water St Busway", "Predictions": [{ "Head": "Harvard", "Route": "69", "Wait": "17 min" }, { "Head": "Clarendon Hill", "Route": "88", "Wait": "12 min" }] }], "StationName": "Lechmere", "TLines": [{ "LineColor": "00843D", "LineName": "Green Line", "Platform1": { "Description": "Copley", "Predictions": [{ "Head": "Heath St", "Route": "E", "Wait": "6 min" }] }, "Platform2": { "Description": "Medford/Tufts", "Predictions": [{ "Head": "Medford", "Route": "E", "Wait": "1 min" }] } }] },
-            { "BusLines": [], "StationName": "State", "TLines": [{ "LineColor": "003DA5", "LineName": "Blue Line", "Platform1": { "Description": "Bowdoin", "Predictions": [{ "Head": "Bowdoin", "Wait": "1 min" }] }, "Platform2": { "Description": "Wonderland", "Predictions": [{ "Head": "Wonderland", "Wait": "2 min" }] } }, { "LineColor": "ED8B00", "LineName": "Orange Line", "Platform1": { "Description": "Forest Hills", "Predictions": [{ "Head": "Forest Hills", "Wait": "0 min" }] }, "Platform2": { "Description": "Oak Grove", "Predictions": [{ "Head": "Oak Grove", "Wait": "3 min" }] } }] }
-        ];
+            const connect = () => {
+                if (eventSource) eventSource.close();
+                eventSource = new EventSource(`/api/station/${STATION_NAME}/stream`);
 
-        const app = createApp({
-            // !!! KEY FIX !!!
-            // We tell Vue to use braket instead of curly to avoid conflicts with Flask
-            delimiters: ['[[', ']]'], 
-            
-            setup() {
-                const stationData = ref(null);
-                const loading = ref(true);
-                const currentTime = ref('');
-                const mockIndex = ref(0);
+                eventSource.onopen = () => { connected.value = true; };
 
-                const theme = computed(() => {
-                    return IS_DARK_MODE ? {
-                        bg: 'bg-gray-900',
-                        text: 'text-gray-100',
-                        cardBg: 'bg-gray-800',
-                        itemBg: 'bg-gray-700',
-                        border: 'border-gray-600',
-                        borderColor: 'border-gray-700',
-                        divideColor: 'divide-gray-700'
-                    } : {
-                        bg: 'bg-gray-100',
-                        text: 'text-gray-900',
-                        cardBg: 'bg-white',
-                        itemBg: 'bg-gray-50',
-                        border: 'border-gray-300',
-                        borderColor: 'border-gray-200',
-                        divideColor: 'divide-gray-200'
-                    };
-                });
-
-                const fetchData = async () => {
-                    try {
-                        if (USE_DEMO_DATA) {
-                            stationData.value = MOCK_DATA[mockIndex.value];
-                            mockIndex.value = (mockIndex.value + 1) % MOCK_DATA.length;
-                        } else {
-                            const response = await fetch(`/api/station/${STATION_NAME}`);
-                            if (!response.ok) throw new Error('Network response was not ok');
-                            stationData.value = await response.json();
-                        }
-                    } catch (error) {
-                        console.error("Error fetching station data:", error);
-                    } finally {
-                        loading.value = false;
-                    }
+                eventSource.onmessage = (event) => {
+                    stationData.value = JSON.parse(event.data);
+                    loading.value     = false;
+                    connected.value   = true;
                 };
 
-                const updateTime = () => {
-                    const now = new Date();
-                    currentTime.value = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                eventSource.onerror = () => {
+                    connected.value = false;
+                    // EventSource auto-reconnects; no manual retry needed
                 };
+            };
 
-                onMounted(() => {
-                    fetchData();
-                    updateTime();
-                    setInterval(fetchData, 15000);
-                    setInterval(updateTime, 1000);
-                });
+            const updateTime = () => {
+                currentTime.value = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            };
 
-                return {
-                    stationData,
-                    loading,
-                    theme,
-                    currentTime,
-                    isDemoMode: USE_DEMO_DATA
-                };
-            }
-        });
+            onMounted(() => {
+                connect();
+                updateTime();
+                setInterval(updateTime, 1000);
+            });
 
-        app.mount('#app');
-    </script>
-</body>
-</html>
+            onUnmounted(() => { if (eventSource) eventSource.close(); });
+
+            return { stationData, loading, connected, theme, isDark, toggleDark, currentTime };
+        }
+    });
+{% endblock %}

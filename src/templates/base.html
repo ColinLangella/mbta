@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}MBTA Monitor{% endblock %}</title>
+    <!-- Inline: prevent dark-mode FOUC before Vue/Tailwind load -->
+    <script>
+        (function() {
+            var dark = localStorage.getItem('darkMode') === 'true';
+            document.documentElement.style.background = dark ? '#111827' : '#f9fafb';
+        })();
+    </script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; margin: 0; }
+        .scroller::-webkit-scrollbar { width: 6px; }
+        .scroller::-webkit-scrollbar-track { background: transparent; }
+        .scroller::-webkit-scrollbar-thumb { background-color: rgba(156, 163, 175, 0.5); border-radius: 20px; }
+        [v-cloak] { display: none; }
+        {% block extra_styles %}{% endblock %}
+    </style>
+</head>
+<body id="app">
+    <div :class="[theme.bg, theme.text]" class="min-h-screen transition-colors duration-300" v-cloak>
+        {% block body %}{% endblock %}
+    </div>
+
+    <script>
+    const { createApp, ref, onMounted, onUnmounted, computed } = Vue;
+
+    const getDarkMode = () => localStorage.getItem('darkMode') === 'true';
+    const saveDarkMode = (val) => localStorage.setItem('darkMode', String(val));
+
+    const isDark = ref(getDarkMode());
+    const toggleDark = () => {
+        isDark.value = !isDark.value;
+        saveDarkMode(isDark.value);
+        document.documentElement.style.background = isDark.value ? '#111827' : '#f9fafb';
+    };
+
+    const theme = computed(() => isDark.value ? {
+        bg: 'bg-gray-900', text: 'text-gray-100', cardBg: 'bg-gray-800',
+        itemBg: 'bg-gray-700', border: 'border-gray-600', borderColor: 'border-gray-700',
+        divideColor: 'divide-gray-700'
+    } : {
+        bg: 'bg-gray-50',  text: 'text-gray-900', cardBg: 'bg-white',
+        itemBg: 'bg-gray-100', border: 'border-gray-300', borderColor: 'border-gray-200',
+        divideColor: 'divide-gray-200'
+    });
+
+    {% block page_script %}{% endblock %}
+
+    app.mount('#app');
+    </script>
+</body>
+</html>
