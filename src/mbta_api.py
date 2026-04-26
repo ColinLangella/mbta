@@ -94,6 +94,7 @@ class MBTA_API:
         self._config.client_side_validation = False
 
         self._api_client = api_client.ApiClient(configuration=self._config)
+        self._api_client.set_default_header('Accept-Encoding', 'gzip')
 
         # Initialize API endpoints
         self._alert      = alert_api.AlertApi(api_client=self._api_client)
@@ -450,10 +451,10 @@ class MBTA_API:
                 return [
                     self.CollectedPrediction(
                         prediction = p,
-                        trip       = allRelationshipData["trip"][1][data["trip"]]       if ("trip" in data) and (data["trip"] is not None)       else None,
-                        vehicle    = allRelationshipData["vehicle"][1][data["vehicle"]] if ("vehicle" in data) and (data["vehicle"] is not None) else None,
-                    #   stop       = allRelationshipData["stop"][1][data["stop"]]       if ("stop" in data) and (data["stop"] is not None)       else None,
-                        route      = allRelationshipData["route"][1][data["route"]]     if ("route" in data) and (data["route"] is not None)     else None
+                        trip       = allRelationshipData["trip"][1].get(data["trip"])       if ("trip" in data) and (data["trip"] is not None)       else None,
+                        vehicle    = allRelationshipData["vehicle"][1].get(data["vehicle"]) if ("vehicle" in data) and (data["vehicle"] is not None) else None,
+                    #   stop       = allRelationshipData["stop"][1].get(data["stop"])       if ("stop" in data) and (data["stop"] is not None)       else None,
+                        route      = allRelationshipData["route"][1].get(data["route"])     if ("route" in data) and (data["route"] is not None)     else None
                     ) for p, data in expandedInfo ]
 
             except Exception as e:

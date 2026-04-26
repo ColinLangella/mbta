@@ -16,7 +16,6 @@ handler.setFormatter(formatter)
 app.logger.addHandler(handler)
 
 api = MBTA_API(logger=app.logger)
-api.DEBUG = False
 
 StationFormater = StationDataFormater(api)
 AlertFormater = AlertDataFormater(api)
@@ -144,7 +143,7 @@ if __name__ == '__main__':
     api.ROUTE_TYPE = args.route_type
 
     app.logger.info("Starting MBTA API server...")
-    app.logger.info("Version: 0.6")
+    app.logger.info("Version: v_0.7")
     app.logger.info("Args: " + str(args))
 
     if args.debug:
