@@ -25,6 +25,54 @@
             </div>
         </header>
 
+        <!-- Station Alerts -->
+        <div v-if="stationData?.station_alerts?.length > 0" class="mb-8">
+            <button @click="alertsOpen = !alertsOpen"
+                    class="w-full flex items-center justify-between mb-3 cursor-pointer group">
+                <h2 class="text-xl font-bold flex items-center gap-2">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                              d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+                    </svg>
+                    Service Alerts
+                    <span class="text-sm font-normal opacity-60">([[ alertCountLabel ]])</span>
+                </h2>
+                <svg class="w-5 h-5 opacity-50 group-hover:opacity-100 transition-transform duration-200"
+                     :class="alertsOpen ? 'rotate-180' : ''"
+                     fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                </svg>
+            </button>
+            <div v-show="alertsOpen" class="flex flex-col gap-3">
+                <div v-for="alert in stationData.station_alerts" :key="alert.id"
+                     class="rounded-xl shadow overflow-hidden border border-opacity-20"
+                     :class="[theme.cardBg, theme.borderColor]">
+                    <div class="h-1.5 w-full" :class="getSeverityColor(alert.severity)"></div>
+                    <div class="p-4 flex flex-col gap-1">
+                        <div class="flex flex-wrap items-center justify-between gap-2">
+                            <span class="text-xs font-bold uppercase tracking-widest" :class="alert.lifecycle === 'UPCOMING' ? 'text-purple-500' : 'text-green-500'">
+                                [[ alert.lifecycle === 'UPCOMING' ? 'Upcoming' : 'Current' ]]
+                                <span v-if="alert.timeframe" class="opacity-60 ml-1">([[ alert.timeframe ]])</span>
+                            </span>
+                            <span class="text-xs font-bold px-2 py-0.5 rounded-full text-white" :class="getSeverityColor(alert.severity)">
+                                [[ getSeverityLabel(alert.severity) ]]
+                            </span>
+                        </div>
+                        <div class="text-xs font-bold opacity-70 uppercase tracking-tight">[[ alert.service_effect ]]</div>
+                        <p class="text-sm font-semibold leading-snug">[[ alert.header ]]</p>
+                        <div v-if="alert.affected_routes?.length" class="flex flex-wrap gap-1 mt-1">
+                            <span v-for="route in alert.affected_routes" :key="route"
+                                  class="text-[10px] font-black px-2 py-0.5 rounded uppercase"
+                                  :style="alert.route_colors?.[route] ? { backgroundColor: alert.route_colors[route], color: '#fff' } : {}"
+                                  :class="alert.route_colors?.[route] ? '' : 'bg-black bg-opacity-10 border border-black border-opacity-10'">
+                                [[ route ]]
+                            </span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <div class="grid grid-cols-1 gap-8 mb-8">
             <div v-for="(line, index) in stationData?.TLines" :key="index"
                  class="rounded-xl shadow-lg overflow-hidden border border-opacity-20"
@@ -163,7 +211,29 @@
 
             onUnmounted(() => { if (eventSource) eventSource.close(); });
 
-            return { stationData, loading, connected, theme, isDark, toggleDark, currentTime };
+            const alertsOpen = ref(false);
+            const alertCountLabel = computed(() => {
+                const alerts = stationData.value?.station_alerts || [];
+                const current  = alerts.filter(a => a.lifecycle !== 'UPCOMING').length;
+                const upcoming = alerts.filter(a => a.lifecycle === 'UPCOMING').length;
+                if (current === 0 && upcoming === 0) return '0';
+                const parts = [];
+                if (current  > 0) parts.push(`${current} current`);
+                if (upcoming > 0) parts.push(`${upcoming} upcoming`);
+                return parts.join(', ');
+            });
+            const getSeverityColor = (severity) => {
+                if (severity >= 7) return 'bg-red-600';
+                if (severity >= 4) return 'bg-orange-500';
+                return 'bg-yellow-400';
+            };
+            const getSeverityLabel = (severity) => {
+                if (severity >= 7) return 'High';
+                if (severity >= 4) return 'Medium';
+                return 'Low';
+            };
+
+            return { stationData, loading, connected, theme, isDark, toggleDark, currentTime, alertsOpen, alertCountLabel, getSeverityColor, getSeverityLabel };
         }
     });
 {% endblock %}

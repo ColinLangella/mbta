@@ -56,12 +56,50 @@ def stations_page():
 def station_monitor(station_name):
     return render_template('stations.html', station_name=station_name)
 
+def _build_route_color_map(alert_dicts: list[dict]) -> dict:
+    route_ids = {r for a in alert_dicts for r in (a.get("affected_routes") or [])}
+    if not route_ids:
+        return {}
+    routes = api.getRoutesByIds(",".join(sorted(route_ids)))
+    return {r.id: "#" + r.attributes.color for r in routes if r.attributes and r.attributes.color}
+
+def _attach_route_colors(alert_dicts: list[dict]) -> None:
+    color_map = _build_route_color_map(alert_dicts)
+    for alert in alert_dicts:
+        alert["route_colors"] = {r: color_map[r] for r in (alert.get("affected_routes") or []) if r in color_map}
+
+def _get_station_alerts(raw_predictions: dict) -> list[dict]:
+    station_route_ids = set()
+    for preds in raw_predictions.values():
+        for cp in preds:
+            if cp.route and cp.route.id:
+                station_route_ids.add(cp.route.id)
+
+    station_route_types = {stop.routeType for stop in raw_predictions.keys()}
+
+    raw_alerts = api.getSubwayAlerts()
+    formatted  = AlertFormatter.format_alerts(raw_alerts)
+
+    result = []
+    for alert in formatted:
+        routes = alert.affected_routes or []
+        if routes:
+            if station_route_ids & set(routes):
+                result.append(asdict(alert))
+        else:
+            if alert.min_route_type in station_route_types:
+                result.append(asdict(alert))
+    _attach_route_colors(result)
+    return result
+
 @app.route('/api/station/<path:station_name>')
 def station_info(station_name):
     try:
-        station_name = station_name.replace("_", " ")
-        station_data = api.getStationPredictions(station_name)
-        return asdict(StationFormatter.createFormattedStationData(station_name, station_data)), 200
+        station_name    = station_name.replace("_", " ")
+        raw_predictions = api.getStationPredictions(station_name)
+        formatted       = asdict(StationFormatter.createFormattedStationData(station_name, raw_predictions))
+        formatted['station_alerts'] = _get_station_alerts(raw_predictions)
+        return formatted, 200
     except Exception as e:
         app.logger.exception(f"Failed to fetch predictions for station: {station_name}")
         return {"error": "Internal Server Error"}, 500
@@ -73,8 +111,9 @@ def station_stream(station_name):
     def generate():
         while True:
             try:
-                station_data = api.getStationPredictions(station_name)
-                formatted    = asdict(StationFormatter.createFormattedStationData(station_name, station_data))
+                raw_predictions = api.getStationPredictions(station_name)
+                formatted       = asdict(StationFormatter.createFormattedStationData(station_name, raw_predictions))
+                formatted['station_alerts'] = _get_station_alerts(raw_predictions)
                 yield f"data: {json.dumps(formatted)}\n\n"
             except Exception:
                 app.logger.exception(f"SSE error for station: {station_name}")
@@ -110,7 +149,7 @@ def station_info_raw(station_name):
 
 @app.route('/health')
 def health():
-    return {"status": "ok", "version": "v_0.8", "route_types": get_allowed_route_types()}, 200
+    return {"status": "ok", "version": "v_0.9", "route_types": get_allowed_route_types()}, 200
 
 
 @app.route('/alerts')
@@ -121,10 +160,11 @@ def alerts_page():
 def alerts_data():
     try:
         raw_alerts = api.getSubwayAlerts()
-        formatted_alerts = AlertFormatter.format_alerts(raw_alerts)
+        formatted_alerts = [asdict(a) for a in AlertFormatter.format_alerts(raw_alerts)]
+        _attach_route_colors(formatted_alerts)
         allowed_types = get_allowed_route_types()
         return {
-            "alerts": [asdict(a) for a in formatted_alerts],
+            "alerts": formatted_alerts,
             "allowed_route_types": allowed_types
         }, 200
     except Exception as e:
@@ -165,7 +205,7 @@ if __name__ == '__main__':
     api.ROUTE_TYPE = args.route_type
 
     app.logger.info("Starting MBTA API server...")
-    app.logger.info("Version: v_0.8")
+    app.logger.info("Version: v_0.9")
     app.logger.info("Args: " + str(args))
 
     if args.debug:

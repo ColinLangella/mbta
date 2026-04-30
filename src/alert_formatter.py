@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import datetime
 from typing import List, Optional
 
 @dataclass
@@ -40,7 +41,7 @@ class AlertDataFormatter:
                 header=attr.get("header"),
                 service_effect=attr.get("service_effect"),
                 severity=attr.get("severity"),
-                updated_at=attr.get("updated_at"),
+                updated_at=attr.get("updated_at").isoformat() if isinstance(attr.get("updated_at"), datetime) else attr.get("updated_at"),
                 lifecycle=attr.get("lifecycle", "Unknown"),
                 timeframe=attr.get("timeframe", ""),
                 min_route_type=min_route,

@@ -39,8 +39,8 @@
 
                     <div class="p-5">
                         <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
-                            <span class="text-xs font-bold uppercase tracking-widest text-blue-500">
-                                [[ alert.lifecycle ]]
+                            <span class="text-xs font-bold uppercase tracking-widest" :class="alert.lifecycle === 'UPCOMING' ? 'text-purple-500' : 'text-green-500'">
+                                [[ alert.lifecycle === 'UPCOMING' ? 'Upcoming' : 'Current' ]]
                                 <span v-if="alert.timeframe" class="opacity-60 ml-1">([[ alert.timeframe ]])</span>
                             </span>
                             <span class="text-xs font-mono opacity-50">
@@ -58,7 +58,9 @@
 
                         <div v-if="alert.affected_routes?.length" class="flex flex-wrap gap-2 mb-4">
                             <span v-for="route in alert.affected_routes" :key="route"
-                                  class="text-[10px] font-black px-2 py-0.5 rounded bg-black bg-opacity-10 border border-black border-opacity-10 uppercase">
+                                  class="text-[10px] font-black px-2 py-0.5 rounded uppercase"
+                                  :style="alert.route_colors?.[route] ? { backgroundColor: alert.route_colors[route], color: '#fff' } : {}"
+                                  :class="alert.route_colors?.[route] ? '' : 'bg-black bg-opacity-10 border border-black border-opacity-10'">
                                 [[ route ]]
                             </span>
                         </div>
