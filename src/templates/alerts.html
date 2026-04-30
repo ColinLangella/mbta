@@ -16,7 +16,7 @@
             </div>
             <div class="text-right">
                 <div class="text-sm font-mono opacity-60">[[ currentTime ]]</div>
-                <div class="text-xs font-bold mt-1 text-blue-500">System Live</div>
+                <div class="text-xs font-bold mt-1 opacity-50">Updated [[ lastFetched ]]</div>
                 <button @click="toggleDark" class="text-xs opacity-50 hover:opacity-100 transition-opacity mt-1 cursor-pointer block ml-auto">
                     <span v-if="isDark">☀ Light</span><span v-else>☾ Dark</span>
                 </button>
@@ -93,10 +93,11 @@
     const app = createApp({
         delimiters: ['[[', ']]'],
         setup() {
-            const rawAlerts   = ref([]);
+            const rawAlerts    = ref([]);
             const allowedTypes = ref([]);
-            const loading     = ref(true);
-            const currentTime = ref('');
+            const loading      = ref(true);
+            const currentTime  = ref('');
+            const lastFetched  = ref('–');
 
             const groupedAlerts = computed(() =>
                 SECTIONS
@@ -109,6 +110,7 @@
                     const data = await fetch('/api/alerts').then(r => r.json());
                     rawAlerts.value    = data.alerts;
                     allowedTypes.value = data.allowed_route_types;
+                    lastFetched.value  = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
                 } catch (e) {
                     console.error("Error fetching alerts:", e);
                 } finally {
@@ -138,7 +140,7 @@
                 setInterval(updateTime,   1000);
             });
 
-            return { rawAlerts, allowedTypes, groupedAlerts, loading, theme, isDark, toggleDark, currentTime, getSeverityColor, formatTime };
+            return { rawAlerts, allowedTypes, groupedAlerts, loading, theme, isDark, toggleDark, currentTime, lastFetched, getSeverityColor, formatTime };
         }
     });
 {% endblock %}

@@ -188,9 +188,13 @@
                 eventSource.onopen = () => { connected.value = true; };
 
                 eventSource.onmessage = (event) => {
-                    stationData.value = JSON.parse(event.data);
-                    loading.value     = false;
-                    connected.value   = true;
+                    try {
+                        stationData.value = JSON.parse(event.data);
+                        loading.value     = false;
+                        connected.value   = true;
+                    } catch (e) {
+                        console.error("SSE parse error:", e);
+                    }
                 };
 
                 eventSource.onerror = () => {

@@ -27,8 +27,8 @@ except KeyError as e:
 
 api = MBTA_API(logger=app.logger)
 
-StationFormatter = StationDataFormatter(logger=app.logger)
-AlertFormatter   = AlertDataFormatter()
+station_formatter = StationDataFormatter(logger=app.logger)
+alert_formatter   = AlertDataFormatter()
 
 def get_allowed_route_types() -> list[int]:
     return [int(x.strip()) for x in api.ROUTE_TYPE.split(",")]
@@ -78,7 +78,7 @@ def _get_station_alerts(raw_predictions: dict) -> list[dict]:
     station_route_types = {stop.routeType for stop in raw_predictions.keys()}
 
     raw_alerts = api.getSubwayAlerts()
-    formatted  = AlertFormatter.format_alerts(raw_alerts)
+    formatted  = alert_formatter.format_alerts(raw_alerts)
 
     result = []
     for alert in formatted:
@@ -97,7 +97,7 @@ def station_info(station_name):
     try:
         station_name    = station_name.replace("_", " ")
         raw_predictions = api.getStationPredictions(station_name)
-        formatted       = asdict(StationFormatter.createFormattedStationData(station_name, raw_predictions))
+        formatted       = asdict(station_formatter.createFormattedStationData(station_name, raw_predictions))
         formatted['station_alerts'] = _get_station_alerts(raw_predictions)
         return formatted, 200
     except Exception as e:
@@ -112,7 +112,7 @@ def station_stream(station_name):
         while True:
             try:
                 raw_predictions = api.getStationPredictions(station_name)
-                formatted       = asdict(StationFormatter.createFormattedStationData(station_name, raw_predictions))
+                formatted       = asdict(station_formatter.createFormattedStationData(station_name, raw_predictions))
                 formatted['station_alerts'] = _get_station_alerts(raw_predictions)
                 yield f"data: {json.dumps(formatted)}\n\n"
             except Exception:
@@ -149,7 +149,7 @@ def station_info_raw(station_name):
 
 @app.route('/health')
 def health():
-    return {"status": "ok", "version": "v_0.9", "route_types": get_allowed_route_types()}, 200
+    return {"status": "ok", "version": "v_1.0", "route_types": get_allowed_route_types()}, 200
 
 
 @app.route('/alerts')
@@ -160,7 +160,7 @@ def alerts_page():
 def alerts_data():
     try:
         raw_alerts = api.getSubwayAlerts()
-        formatted_alerts = [asdict(a) for a in AlertFormatter.format_alerts(raw_alerts)]
+        formatted_alerts = [asdict(a) for a in alert_formatter.format_alerts(raw_alerts)]
         _attach_route_colors(formatted_alerts)
         allowed_types = get_allowed_route_types()
         return {
@@ -205,12 +205,12 @@ if __name__ == '__main__':
     api.ROUTE_TYPE = args.route_type
 
     app.logger.info("Starting MBTA API server...")
-    app.logger.info("Version: v_0.9")
+    app.logger.info("Version: v_1.0")
     app.logger.info("Args: " + str(args))
 
     if args.debug:
         api.DEBUG = True
-        StationFormatter.debug = True
+        station_formatter.debug = True
         app.logger.setLevel(logging.DEBUG)
     else:
         app.logger.setLevel(logging.INFO)

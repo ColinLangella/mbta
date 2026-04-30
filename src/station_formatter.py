@@ -7,28 +7,28 @@ from typing import Dict, List, Optional
 from datetime import datetime, timezone
 
 @dataclass
-class IndiviualPrediction:
+class IndividualPrediction:
     Wait: str
     Head: str
     Route: str
     Status: Optional[str] = None
 
 @dataclass
-class IndiviualTPlatform:
+class IndividualTPlatform:
     Description: str
-    Predictions: List[IndiviualPrediction]
+    Predictions: List[IndividualPrediction]
 
 @dataclass
 class FormattedTLine:
     LineName: str
-    Platform1: Optional[IndiviualTPlatform]
-    Platform2: Optional[IndiviualTPlatform]
+    Platform1: Optional[IndividualTPlatform]
+    Platform2: Optional[IndividualTPlatform]
     LineColor: Optional[str] = None
 
 @dataclass
 class FormattedBusLine:
     BuswayName:  str
-    Predictions: List[IndiviualPrediction]
+    Predictions: List[IndividualPrediction]
 
 @dataclass
 class FormattedStationData:
@@ -50,8 +50,8 @@ class StationDataFormatter:
         self.debug  = debug
 
 
-    """Processes a single prediction into an IndiviualPrediction."""
-    def ProcessPrdiction(self, currentStop: MBTA_API.CurrentStopInfo, fullPred: MBTA_API.CollectedPrediction) -> IndiviualPrediction:
+    """Processes a single prediction into an IndividualPrediction."""
+    def ProcessPrediction(self, currentStop: MBTA_API.CurrentStopInfo, fullPred: MBTA_API.CollectedPrediction) -> IndividualPrediction:
         # Pull out component fields
         pred    = fullPred.prediction
         trip    = fullPred.trip
@@ -113,18 +113,18 @@ class StationDataFormatter:
             trainStatus = pred.attributes.schedule_relationship.title()
 
         # Create output object
-        return IndiviualPrediction(waitStr, head, routeName, trainStatus)
+        return IndividualPrediction(waitStr, head, routeName, trainStatus)
 
 
-    """Processes platform data into an IndiviualTPlatform."""
-    def processTPlatform(self, data: tuple[Optional[MBTA_API.CurrentStopInfo], list[MBTA_API.CollectedPrediction]]) -> Optional[IndiviualTPlatform]:
+    """Processes platform data into an IndividualTPlatform."""
+    def processTPlatform(self, data: tuple[Optional[MBTA_API.CurrentStopInfo], list[MBTA_API.CollectedPrediction]]) -> Optional[IndividualTPlatform]:
         currentStop, preds = data
         if not currentStop: return None
 
-        return IndiviualTPlatform(
+        return IndividualTPlatform(
             Description = data[0].platName if currentStop.platName else currentStop.description,
             Predictions = sorted( [
-                self.ProcessPrdiction(currentStop, pred) for pred in preds ],
+                self.ProcessPrediction(currentStop, pred) for pred in preds ],
                 key=lambda p: self._to_minutes(p) ) )
 
 
@@ -153,7 +153,7 @@ class StationDataFormatter:
         return FormattedBusLine(
             BuswayName  = stop.platName if stop.platName else (stop.description if stop.description else stop.stopName),
             Predictions = sorted( [
-                self.ProcessPrdiction(stop, pred) for pred in preds ],
+                self.ProcessPrediction(stop, pred) for pred in preds ],
                 key=lambda p: self._to_minutes(p) ) )
 
 
@@ -213,7 +213,7 @@ class StationDataFormatter:
             TLines   = [ self.processTData(color, tData) for color, tData in TLines.items() ],
             BusLines = sorted ( [ self.processBusData(BusLine[0], BusLine[1]) for BusLine in BusLines ] , key=lambda b: b.BuswayName ) )
 
-    def _to_minutes(self, pred: IndiviualPrediction) -> int:
+    def _to_minutes(self, pred: IndividualPrediction) -> int:
         """Convert prediction wait time to minutes for sorting."""
         special_cases = {
             "Boarding": -100,
