@@ -149,7 +149,7 @@ def station_info_raw(station_name):
 
 @app.route('/health')
 def health():
-    return {"status": "ok", "version": "v_1.0", "route_types": get_allowed_route_types()}, 200
+    return {"status": "ok", "version": "WORK", "route_types": get_allowed_route_types()}, 200
 
 
 @app.route('/alerts')
@@ -205,7 +205,7 @@ if __name__ == '__main__':
     api.ROUTE_TYPE = args.route_type
 
     app.logger.info("Starting MBTA API server...")
-    app.logger.info("Version: v_1.0")
+    app.logger.info("Version: WORK")
     app.logger.info("Args: " + str(args))
 
     if args.debug:
