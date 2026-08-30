@@ -16,4 +16,7 @@ venv/
 # Editor / machine-local
 .vscode/
 .DS_Store
-.claude/
+.claude/*
+!.claude/agents/
+.claude/agents/*
+!.claude/agents/*.md

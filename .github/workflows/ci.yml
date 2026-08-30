@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  compile:
+    name: Byte-compile and lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # app.py reads MBTA_LAT/MBTA_LON at import time and raises without them,
+      # so it cannot simply be imported here. compileall catches syntax errors
+      # without executing module-level code.
+      - name: Byte-compile
+        run: python -m compileall -q src lib/mbta_client
+
+      - name: Lint (syntax errors and undefined names only)
+        run: |
+          pip install ruff
+          ruff check src --select=E9,F63,F7,F82
+
+  docker:
+    name: Docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t mbta-monitor:ci .

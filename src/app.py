@@ -19,6 +19,8 @@ formatter = logging.Formatter('[%(asctime)s] %(levelname)s in %(module)s: %(mess
 handler.setFormatter(formatter)
 app.logger.addHandler(handler)
 
+APP_VERSION = os.environ.get("APP_VERSION", "dev")
+
 try:
     MBTA_LAT = float(os.environ["MBTA_LAT"])
     MBTA_LON = float(os.environ["MBTA_LON"])
@@ -149,7 +151,7 @@ def station_info_raw(station_name):
 
 @app.route('/health')
 def health():
-    return {"status": "ok", "version": "WORK", "route_types": get_allowed_route_types()}, 200
+    return {"status": "ok", "version": APP_VERSION, "route_types": get_allowed_route_types()}, 200
 
 
 @app.route('/alerts')
@@ -205,7 +207,7 @@ if __name__ == '__main__':
     api.ROUTE_TYPE = args.route_type
 
     app.logger.info("Starting MBTA API server...")
-    app.logger.info("Version: WORK")
+    app.logger.info(f"Version: {APP_VERSION}")
     app.logger.info("Args: " + str(args))
 
     if args.debug:
