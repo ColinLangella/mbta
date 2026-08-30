@@ -54,6 +54,20 @@ if [ "$CTX" != "$BASE_DIR" ] && [ ! -e "$CTX/.env" ]; then
   ln -s "$BASE_DIR/.env" "$CTX/.env"
 fi
 
+# Only one version runs at a time: the container name is fixed, so compose
+# fails with an opaque "name is already in use" error if another checkout or
+# project already has one up. Catch that here and say what to do about it.
+existing="$(container_id any)"
+if [ -n "$existing" ]; then
+  owner="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$existing" 2>/dev/null || true)"
+  if [ -n "$owner" ] && [ "$owner" != "$PROJECT" ]; then
+    echo "ERROR: a '${CONTAINER}' container already exists, owned by compose project '${owner}'." >&2
+    echo "       Only one version can run at a time. Stop it first:" >&2
+    echo "         COMPOSE_PROJECT_NAME=${owner} ./commands/down.sh" >&2
+    exit 1
+  fi
+fi
+
 export HOST_PORT="${HOST_PORT:-5000}"
 
 echo "BASE_DIR    = $BASE_DIR"
